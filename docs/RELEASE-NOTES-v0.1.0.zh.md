@@ -38,9 +38,9 @@ DeepSeek Harness App（dsh-app）是 [DeepSeek Harness](https://github.com/deeps
 
 | 平台 | 安装包 |
 |------|--------|
-| Windows | `DSH App_0.1.0_x64-setup.exe`（NSIS 安装器）/ `DSH App_0.1.0_x64_en-US.msi` |
-| macOS | `dsh-app_0.1.0_aarch64.dmg`（Apple Silicon）/ `dsh-app_0.1.0_x64.dmg`（Intel）|
-| Linux | `dsh-app_0.1.0_amd64.deb` / `.AppImage` |
+| Windows | `DSH-App_0.1.0_x64-setup.exe`（NSIS 安装器）/ `DSH-App_0.1.0_x64_en-US.msi` |
+| macOS | `DSH-App_0.1.0_aarch64.dmg`（Apple Silicon）/ `DSH-App_0.1.0_x64.dmg`（Intel）|
+| Linux | `dsh-app_0.1.0_amd64.deb` / `DSH-App_0.1.0_amd64.AppImage` |
 
 > macOS / Linux 产物由 CI 构建，未经签名（macOS 首次打开需右键 → 打开）。
 

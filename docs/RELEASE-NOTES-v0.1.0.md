@@ -38,9 +38,9 @@ DeepSeek Harness App (dsh-app) is an **unofficial** cross-platform desktop clien
 
 | Platform | Package |
 |----------|---------|
-| Windows | `DSH App_0.1.0_x64-setup.exe` (NSIS) / `DSH App_0.1.0_x64_en-US.msi` |
-| macOS | `dsh-app_0.1.0_aarch64.dmg` (Apple Silicon) / `dsh-app_0.1.0_x64.dmg` (Intel) |
-| Linux | `dsh-app_0.1.0_amd64.deb` / `.AppImage` |
+| Windows | `DSH-App_0.1.0_x64-setup.exe` (NSIS) / `DSH-App_0.1.0_x64_en-US.msi` |
+| macOS | `DSH-App_0.1.0_aarch64.dmg` (Apple Silicon) / `DSH-App_0.1.0_x64.dmg` (Intel) |
+| Linux | `dsh-app_0.1.0_amd64.deb` / `DSH-App_0.1.0_amd64.AppImage` |
 
 > macOS / Linux artifacts are built by CI and are unsigned (macOS first launch: right-click → Open).
 

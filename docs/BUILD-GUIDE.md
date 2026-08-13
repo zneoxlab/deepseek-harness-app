@@ -19,7 +19,7 @@ npm run tauri build            # 打全部目标（NSIS + MSI）
 npm run tauri build -- --bundles nsis   # 只打 NSIS（推荐，跳过 MSI/WiX 更快）
 ```
 
-产物位置：`src-tauri\target\release\bundle\nsis\dsh-app_0.1.0_x64-setup.exe`
+产物位置：`src-tauri\target\release\bundle\nsis\DSH-App_0.1.0_x64-setup.exe`
 
 > 注意：先确认没有正在运行的 `dsh-app.exe`（占锁会导致构建失败）。
 
