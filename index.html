@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek Harness</title>
+    <script>
+      // 语言自适应：跟随系统语言（zh → 中文，其他 → English），同步 html lang
+      (function () {
+        var zh = (navigator.language || "en").toLowerCase().startsWith("zh");
+        document.documentElement.lang = zh ? "zh-CN" : "en";
+      })();
+    </script>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --fg: #1f2329;
+        --muted: #6b7280;
+        --accent: #4d7cfe;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        -webkit-font-smoothing: antialiased;
+      }
+      #root { display: flex; min-height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

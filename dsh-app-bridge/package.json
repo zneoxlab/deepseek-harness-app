@@ -1,0 +1,34 @@
+{
+  "name": "dsh-app-bridge",
+  "version": "0.1.0",
+  "description": "DSH App desktop-shell bridge: fused title bar + DSH App settings page (about & update check) inside the official DSH Web UI",
+  "type": "module",
+  "main": "lib/server.js",
+  "exports": {
+    ".": "./lib/server.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "license": "MIT"
+}

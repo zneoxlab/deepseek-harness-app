@@ -1,0 +1,7 @@
+# dsh-app-bridge patch layer — applied when this bundle is active in a profile.
+# The desktop shell (dsh-app) manages a dedicated `dsh-app` profile and keeps
+# this bundle in its bundle list, so this insert row is what registers the
+# plugin into the composed tree.
+- insert:
+    - id: dsh-app-bridge
+      name: dsh-app-bridge

@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Main window: core events + dsh-app bridge commands. Remote pages on 127.0.0.1 (the official dsh web UI loaded by the shell) may call the window control + connect commands so the injected title bar works.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-dsh-detect",
+    "allow-dsh-connect",
+    "allow-app-info",
+    "allow-window-minimize",
+    "allow-window-toggle-maximize",
+    "allow-window-close",
+    "allow-window-start-dragging"
+  ],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  }
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsh-connect"
+description = "Enables the dsh_connect command without any pre-configured scope."
+commands.allow = ["dsh_connect"]
+
+[[permission]]
+identifier = "deny-dsh-connect"
+description = "Denies the dsh_connect command without any pre-configured scope."
+commands.deny = ["dsh_connect"]

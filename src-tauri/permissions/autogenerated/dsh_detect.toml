@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dsh-detect"
+description = "Enables the dsh_detect command without any pre-configured scope."
+commands.allow = ["dsh_detect"]
+
+[[permission]]
+identifier = "deny-dsh-detect"
+description = "Denies the dsh_detect command without any pre-configured scope."
+commands.deny = ["dsh_detect"]
