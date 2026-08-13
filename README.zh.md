@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/screenshots/home.png" alt="DeepSeek Harness App" width="128" height="128" style="border-radius: 18px;" />
+  <img src="src-tauri/icons/icon.png" alt="DeepSeek Harness App" width="128" height="128" style="border-radius: 18px;" />
 </p>
 
 <h1 align="center">DeepSeek Harness App</h1>
