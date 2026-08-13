@@ -31,7 +31,7 @@
 
 The official `dsh` ships a **complete web UI** (sessions, projects, permissions, skills, plugins, media — everything lives there). The official ACP server (`@deepseek-ai/dsh-acp`) is automation-only: it creates fresh sessions but cannot load / list / resume / fork existing ones, so it cannot power a full desktop console.
 
-That is why **DeepSeek Harness App builds on the official web UI instead of reinventing it** — exactly the opposite of Grok App, which had to rebuild every screen because Grok ships a CLI only. We add only what a browser cannot: a native shell, tray residency, and desktop integrations.
+That is why **DeepSeek Harness App builds on the official web UI instead of reinventing it**: we add only what a browser cannot — a native shell, tray residency, and desktop integrations.
 
 ## Contents
 

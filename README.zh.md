@@ -31,7 +31,7 @@
 
 官方 `dsh` 自带**功能完整的 Web UI**（会话、项目、权限、技能、插件、媒体全在里面）。而官方 ACP 服务（`@deepseek-ai/dsh-acp`）是 automation-only：只能创建全新会话，无法加载/列出/恢复/分叉已有会话，撑不起一个完整的桌面指挥台。
 
-所以 **DeepSeek Harness App 选择在官方 Web UI 之上做增强，而不是重造前端** —— 与 Grok App 正好相反（Grok 官方只有 CLI，Grok App 必须重画每一个界面）。我们只补浏览器给不了的东西：原生外壳、托盘常驻、桌面集成。
+所以 **DeepSeek Harness App 选择在官方 Web UI 之上做增强，而不是重造前端**：我们只补浏览器给不了的东西 —— 原生外壳、托盘常驻、桌面集成。
 
 ## 目录
 
