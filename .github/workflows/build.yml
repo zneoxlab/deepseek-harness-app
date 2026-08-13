@@ -7,6 +7,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# tauri-action 需要创建 Release 并上传产物 → 显式要求 contents 写权限
+# （仓库默认 Workflow permissions 是只读，会报 "Resource not accessible by integration"）
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
