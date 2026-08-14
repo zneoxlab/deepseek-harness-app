@@ -458,9 +458,12 @@ fn resolve_dsh() -> Option<(std::path::PathBuf, &'static str)> {
 /// 定位 npm 全局安装的 @deepseek-ai/dsh 的 bin.js。
 /// 优先用 `npm root -g`（准确），失败时回退常见全局目录。
 fn npm_global_dsh_entry() -> Option<std::path::PathBuf> {
-    // 尝试 `npm root -g`
-    let mut npm_cmd = Command::new("npm");
-    npm_cmd.args(["root", "-g"]);
+    // 尝试 `npm root -g`（Windows 上 npm 是 .cmd, 需经 cmd /C）
+    let mut npm_cmd = Command::new(if cfg!(windows) { "cmd" } else { "npm" });
+    if cfg!(windows) {
+        npm_cmd.arg("/C");
+    }
+    npm_cmd.arg("npm").args(["root", "-g"]);
     no_console(&mut npm_cmd);
     if let Ok(out) = npm_cmd.output() {
         if out.status.success() {
@@ -477,9 +480,22 @@ fn npm_global_dsh_entry() -> Option<std::path::PathBuf> {
             }
         }
     }
-    // 回退：Windows 常见全局目录
+    // 回退：Windows 常见全局目录（含应用托管目录 ~/.dsh-app/npm-global）
     #[cfg(windows)]
     {
+        if let Ok(up) = std::env::var("USERPROFILE") {
+            let entry = std::path::PathBuf::from(&up)
+                .join(".dsh-app")
+                .join("npm-global")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh")
+                .join("lib")
+                .join("bin.js");
+            if entry.exists() {
+                return Some(entry);
+            }
+        }
         if let Ok(appdata) = std::env::var("APPDATA") {
             let entry = std::path::PathBuf::from(&appdata)
                 .join("npm")
@@ -521,10 +537,27 @@ fn npm_global_dsh_entry() -> Option<std::path::PathBuf> {
 
 fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
+    // Windows 上按 PATHEXT 探测扩展名（npm → npm.cmd 等）
+    let exts: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect()
+    } else {
+        Vec::new()
+    };
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
         if candidate.is_file() {
             return Some(candidate);
+        }
+        for e in &exts {
+            let c = dir.join(format!("{name}{e}"));
+            if c.is_file() {
+                return Some(c);
+            }
         }
     }
     None
@@ -537,13 +570,22 @@ fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
 ///   - nvm: ~/.nvm/versions/node/<最新安装版本>/bin/dsh
 fn known_dsh_bin() -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Ok(home) = std::env::var(home_var) {
         let home = std::path::Path::new(&home);
-        candidates.push(home.join(".npm-global").join("bin").join("dsh"));
-        candidates.push(home.join(".volta").join("bin").join("dsh"));
-        // 应用内一键安装的托管环境
-        candidates.push(home.join(".dsh-app").join("npm-global").join("bin").join("dsh"));
-        // nvm 装了多个 node 版本时取最新安装的
+        if cfg!(windows) {
+            // Windows: npm 全局 shim 在 prefix 根目录, 后缀 .cmd (volta 是 .exe)
+            candidates.push(home.join(".npm-global").join("dsh.cmd"));
+            candidates.push(home.join(".dsh-app").join("npm-global").join("dsh.cmd"));
+            candidates.push(home.join(".volta").join("bin").join("dsh.exe"));
+        } else {
+            candidates.push(home.join(".npm-global").join("bin").join("dsh"));
+            candidates.push(home.join(".volta").join("bin").join("dsh"));
+            // 应用内一键安装的托管环境
+            candidates.push(home.join(".dsh-app").join("npm-global").join("bin").join("dsh"));
+        }
+        // nvm 装了多个 node 版本时取最新安装的（unix 系布局）
+        #[cfg(not(windows))]
         if let Ok(rd) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
             let mut versions: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
             versions.sort_by_key(|p| {
@@ -699,7 +741,7 @@ fn probe_dsh_version(entry: &std::path::Path) -> Option<String> {
         no_console(&mut c);
         c.output()
     } else {
-        let mut c = Command::new(entry);
+        let mut c = run_bin_cmd(entry);
         c.arg("--version");
         no_console(&mut c);
         c.output()
@@ -882,7 +924,32 @@ impl ToolStatus {
     }
 }
 
+/// Windows 下 .cmd/.bat 批处理不能直接 CreateProcess（会报 193 不是有效的
+/// Win32 应用程序），必须经 cmd /C 执行。统一在此包装。
+fn run_bin_cmd(bin: &std::path::Path) -> Command {
+    let is_shim = cfg!(windows)
+        && bin
+            .extension()
+            .map(|e| e == "cmd" || e == "bat")
+            .unwrap_or(false);
+    if is_shim {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(bin);
+        c
+    } else {
+        Command::new(bin)
+    }
+}
+
 fn probe_bin_version(bin: &str) -> Option<String> {
+    // Windows: 裸名可能解析到 .cmd shim（npm → npm.cmd），一律经 cmd /C。
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(bin);
+        c
+    };
+    #[cfg(not(windows))]
     let mut c = Command::new(bin);
     c.arg("--version");
     no_console(&mut c);
@@ -1082,26 +1149,46 @@ fn install_dsh(lang: Option<String>, app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// npm 调用方式: 系统 npm（Windows 上为 .cmd shim, 需 cmd /C）
+/// 或托管 node 的 npm-cli.js（直接用 node 执行, 免 cmd）。
+enum NpmInvocation {
+    System(std::path::PathBuf),
+    Managed {
+        node: std::path::PathBuf,
+        cli: std::path::PathBuf,
+    },
+}
+
 fn install_dsh_impl(app: &tauri::AppHandle, lang: Option<String>) {
     let system_npm = which_on_path("npm");
-    let managed_npm = home_dir().map(|h| {
-        let node_dir = h.join(MANAGED_NODE_DIR);
-        if cfg!(windows) {
-            node_dir.join("npm.cmd")
+    let managed_node = home_dir()
+        .map(|h| h.join(MANAGED_NODE_DIR))
+        .filter(|d| d.exists());
+    let npm = if let Some(s) = &system_npm {
+        Some(NpmInvocation::System(s.clone()))
+    } else if let Some(nd) = &managed_node {
+        let node_bin = if cfg!(windows) {
+            nd.join("node.exe")
         } else {
-            node_dir.join("bin").join("npm")
-        }
-    });
-    let npm = match (&system_npm, managed_npm.as_ref()) {
-        (Some(s), _) => Some(s.clone()),
-        (None, Some(m)) if m.exists() => Some(m.clone()),
-        _ => None,
+            nd.join("bin").join("node")
+        };
+        let cli = nd
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js");
+        Some(NpmInvocation::Managed {
+            node: node_bin,
+            cli,
+        })
+    } else {
+        None
     };
     let Some(npm) = npm else {
         emit_install(app, "error", "未找到 npm：请先安装 Node 环境".into(), Some(false));
         return;
     };
-    let using_managed = system_npm.is_none();
+    let using_managed = matches!(npm, NpmInvocation::Managed { .. });
 
     let mirror = use_mirror(lang.as_deref());
     let registries: Vec<&str> = if mirror {
@@ -1114,7 +1201,22 @@ fn install_dsh_impl(app: &tauri::AppHandle, lang: Option<String>) {
     for (i, reg) in registries.iter().enumerate() {
         let label = if mirror && i == 0 { "国内镜像" } else { "官方源" };
         emit_install(app, "installing", format!("正在安装 dsh CLI（{label} registry）…"), None);
-        let mut c = Command::new(&npm);
+        let mut c = match &npm {
+            NpmInvocation::System(p) => {
+                if cfg!(windows) {
+                    let mut c = Command::new("cmd");
+                    c.arg("/C").arg(p);
+                    c
+                } else {
+                    Command::new(p)
+                }
+            }
+            NpmInvocation::Managed { node, cli } => {
+                let mut c = Command::new(node);
+                c.arg(cli);
+                c
+            }
+        };
         c.arg("install").arg("-g").arg("--no-audit").arg("--no-fund");
         if using_managed {
             if let Some(g) = home_dir() {
@@ -1196,14 +1298,14 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
     }
 
     // Windows 上 npm 全局 bin.js 不能直接 spawn，需 `node <bin.js>`；
-    // .cmd/.exe/.ps1 直接执行。用 source 区分更可靠。
+    // .cmd shim 需经 cmd /C（run_bin_cmd 处理）。用 source 区分更可靠。
     let is_js_entry = source == "npm_global" && dsh.extension().map(|e| e == "js").unwrap_or(false);
     let mut cmd = if is_js_entry {
         let mut c = Command::new("node");
         c.arg(&dsh);
         c
     } else {
-        Command::new(&dsh)
+        run_bin_cmd(&dsh)
     };
     cmd.arg("--profile").arg("dsh-app").arg("--port").arg("0");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
