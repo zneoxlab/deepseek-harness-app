@@ -38,11 +38,32 @@ DeepSeek Harness App（dsh-app）是 [DeepSeek Harness](https://github.com/deeps
 
 | 平台 | 安装包 |
 |------|--------|
-| Windows | `DSH-App_0.1.0_x64-setup.exe`（NSIS 安装器）/ `DSH-App_0.1.0_x64_en-US.msi` |
-| macOS | `DSH-App_0.1.0_aarch64.dmg`（Apple Silicon）/ `DSH-App_0.1.0_x64.dmg`（Intel）|
-| Linux | `dsh-app_0.1.0_amd64.deb` / `DSH-App_0.1.0_amd64.AppImage` |
+| Windows | `DSH_0.1.0_x64-setup.exe`（NSIS 安装器）/ `DSH_0.1.0_x64_en-US.msi` |
+| macOS | `DSH_0.1.0_aarch64.dmg`（Apple Silicon）/ `DSH_0.1.0_x64.dmg`（Intel）|
+| Linux | `DSH_0.1.0_amd64.deb` / `DSH_0.1.0_amd64.AppImage` / `DSH-0.1.0-1.x86_64.rpm` |
 
-> macOS / Linux 产物由 CI 构建，未经签名（macOS 首次打开需右键 → 打开）。
+> macOS / Linux 产物由 CI 构建，未经签名（macOS 首次打开需右键 → 打开，详见下方排障）。
+
+### 🍎 macOS 提示"未知开发者" / "已损坏"？
+
+应用未签名、未公证，首次打开可能被 Gatekeeper 拦截。按顺序尝试：
+
+**1. 提示"无法打开，因为无法验证开发者"（未知开发者）**
+
+- 在「访达」中**右键**（或按住 Control 点击）`DSH` 图标 → 选择 **打开** → 再次点击 **打开** 确认
+- 或：**系统设置 → 隐私与安全性**，向下滚动到"安全性"区域 → 点击 **仍要打开**
+
+**2. 提示"应用已损坏，无法打开"**
+
+不是文件损坏——是下载时 macOS 给应用加的隔离属性（quarantine）在拦截未签名应用。打开「终端」执行：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DSH.app
+```
+
+（若提示权限不足，在命令前加 `sudo`。）然后重新打开应用即可。
+
+> 两条命令只影响本机首次启动的放行，不改动应用本身；后续正常打开。
 
 ### ⚠️ 已知限制
 

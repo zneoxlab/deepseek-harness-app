@@ -38,11 +38,32 @@ DeepSeek Harness App (dsh-app) is an **unofficial** cross-platform desktop clien
 
 | Platform | Package |
 |----------|---------|
-| Windows | `DSH-App_0.1.0_x64-setup.exe` (NSIS) / `DSH-App_0.1.0_x64_en-US.msi` |
-| macOS | `DSH-App_0.1.0_aarch64.dmg` (Apple Silicon) / `DSH-App_0.1.0_x64.dmg` (Intel) |
-| Linux | `dsh-app_0.1.0_amd64.deb` / `DSH-App_0.1.0_amd64.AppImage` |
+| Windows | `DSH_0.1.0_x64-setup.exe` (NSIS) / `DSH_0.1.0_x64_en-US.msi` |
+| macOS | `DSH_0.1.0_aarch64.dmg` (Apple Silicon) / `DSH_0.1.0_x64.dmg` (Intel) |
+| Linux | `DSH_0.1.0_amd64.deb` / `DSH_0.1.0_amd64.AppImage` / `DSH-0.1.0-1.x86_64.rpm` |
 
-> macOS / Linux artifacts are built by CI and are unsigned (macOS first launch: right-click → Open).
+> macOS / Linux artifacts are built by CI and are unsigned (macOS first launch: right-click → Open, see the troubleshooting section below).
+
+### 🍎 macOS says "unidentified developer" / "app is damaged"?
+
+The app is unsigned and not notarized, so Gatekeeper may block first launch. Try in order:
+
+**1. "cannot be opened because the developer cannot be verified" (unidentified developer)**
+
+- In **Finder**, **right-click** (or Control-click) the `DSH` icon → choose **Open** → click **Open** again to confirm
+- Or: **System Settings → Privacy & Security**, scroll down to the "Security" section → click **Open Anyway**
+
+**2. "app is damaged and can't be opened"**
+
+It is not actually damaged — macOS attached a quarantine attribute when you downloaded it, which blocks unsigned apps. Open **Terminal** and run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/DSH.app
+```
+
+(Prefix with `sudo` if you get a permission error.) Then open the app again.
+
+> These steps only allow first launch on your machine; the app itself is unchanged and opens normally afterwards.
 
 ### ⚠️ Known limitations
 
