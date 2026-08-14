@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-install-dsh"
+description = "Enables the install_dsh command without any pre-configured scope."
+commands.allow = ["install_dsh"]
+
+[[permission]]
+identifier = "deny-install-dsh"
+description = "Denies the install_dsh command without any pre-configured scope."
+commands.deny = ["install_dsh"]

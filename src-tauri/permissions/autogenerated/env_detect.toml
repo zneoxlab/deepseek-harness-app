@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-env-detect"
+description = "Enables the env_detect command without any pre-configured scope."
+commands.allow = ["env_detect"]
+
+[[permission]]
+identifier = "deny-env-detect"
+description = "Denies the env_detect command without any pre-configured scope."
+commands.deny = ["env_detect"]
