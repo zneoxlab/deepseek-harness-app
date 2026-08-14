@@ -24,6 +24,14 @@ DeepSeek Harness App (dsh-app) is an **unofficial** cross-platform desktop clien
 
 Everything else from v0.1.0 is unchanged (smart connect, tray, fused title bar, settings page, bilingual UI).
 
+### 🔧 Fixed in this release
+
+- 🔓 **One-click install commands were blocked by the ACL**: `env_detect` / `install_node` / `install_dsh` were missing from the permission set and capability whitelist (clicking Install failed with `Command install_node not allowed by ACL`)
+- 🪟 **Wrong Node archive layout on Windows**: switched to the built-in tar (bsdtar) with `--strip-components=1` for extraction (PowerShell `Expand-Archive` kept the zip's top-level folder, so Node verification failed after "installing")
+- 🌏 **Timezone detection on Windows**: added a registry check for China Standard Time, so Chinese-language Windows machines on China time now correctly use the domestic mirror
+
+> Node is installed to `~/.dsh-app/node` and dsh to `~/.dsh-app/npm-global`, **app-local only — the system PATH is never modified** (by design: no admin rights, and your existing Node environment is untouched). To also use this Node in your terminal, add that directory to PATH manually.
+
 ### 📦 Install
 
 1. Download the installer for your platform (see Assets below)

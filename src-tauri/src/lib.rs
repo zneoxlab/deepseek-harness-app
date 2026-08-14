@@ -797,6 +797,26 @@ fn is_china_timezone() -> bool {
             return true;
         }
     }
+    #[cfg(windows)]
+    {
+        // Windows: 注册表时区标准名 (China Standard Time = 中国标准时间 UTC+8)
+        let mut c = Command::new("reg");
+        c.args([
+            "query",
+            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation",
+            "/v",
+            "StandardName",
+        ]);
+        no_console(&mut c);
+        if let Ok(o) = c.output() {
+            if String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("china standard time")
+            {
+                return true;
+            }
+        }
+    }
     false
 }
 
@@ -1004,28 +1024,17 @@ fn install_node_impl(app: &tauri::AppHandle, triple: &str, lang: Option<String>)
         emit_install(app, "error", "无法创建安装目录".into(), Some(false));
         return;
     }
-    let extract_ok = if cfg!(windows) {
-        let mut c = Command::new("powershell");
-        c.args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
-                tmp.display(),
-                staging.display()
-            ),
-        ]);
-        no_console(&mut c);
-        c.status().map(|s| s.success()).unwrap_or(false)
-    } else {
+    // 解压: 统一用系统自带 tar (macOS/Linux 处理 .tar.gz, Windows 10+ 的
+    // bsdtar 同样支持 .zip), 一律 --strip-components=1 拍平顶层目录。
+    // 之前 Windows 用 PowerShell Expand-Archive 会保留 zip 的顶层文件夹,
+    // 导致 node.exe 不在 ~/.dsh-app/node 根目录, 验证必然失败。
+    let extract_ok = {
         let mut c = Command::new("tar");
-        c.args([
-            "-xzf",
-            &tmp.display().to_string(),
-            "-C",
-            &staging.display().to_string(),
-            "--strip-components=1",
-        ]);
+        c.arg(if cfg!(windows) { "-xf" } else { "-xzf" });
+        c.arg(&tmp.display().to_string())
+            .arg("-C")
+            .arg(&staging.display().to_string())
+            .arg("--strip-components=1");
         no_console(&mut c);
         c.status().map(|s| s.success()).unwrap_or(false)
     };

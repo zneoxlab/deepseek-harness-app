@@ -24,6 +24,14 @@ DeepSeek Harness App（dsh-app）是 [DeepSeek Harness](https://github.com/deeps
 
 其余能力与 v0.1.0 一致（智能连接、系统托盘、融合标题栏、设置页、中英双语）。
 
+### 🔧 本版修复
+
+- 🔓 **一键安装命令被 ACL 拦截**：`env_detect` / `install_node` / `install_dsh` 补入权限清单与 capability 白名单（此前点击安装会报 `Command install_node not allowed by ACL`）
+- 🪟 **Windows 上 Node 解压布局错误**：改用系统自带 tar（bsdtar）解压并拍平顶层目录（此前 `Expand-Archive` 会保留 zip 顶层文件夹，导致 Node 安装后验证失败）
+- 🌏 **Windows 时区识别**：新增注册表时区检测（中国标准时间），中文 + 中国时区的 Windows 机器现在会正确走国内镜像
+
+> Node 安装到 `~/.dsh-app/node`、dsh 装到 `~/.dsh-app/npm-global`，**仅应用内使用，不改系统 PATH**——这是有意的：免管理员、不影响你原有的 Node 环境。想在终端里用这个 Node，可手动把对应目录加入 PATH。
+
 ### 📦 安装
 
 1. 下载对应平台的安装包（见下方 Assets）

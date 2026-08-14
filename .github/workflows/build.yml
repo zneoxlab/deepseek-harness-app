@@ -1,4 +1,7 @@
-# 三端打包工作流：推送 v* tag 自动构建 Windows / macOS / Linux 并创建 Draft Release
+# 三端打包工作流：
+#   - 推送 v* tag → 构建 Windows / macOS / Linux 全部平台并创建 Draft Release
+#   - 手动触发 (workflow_dispatch) → 默认只构建 Windows，方便调试迭代，
+#     可选 macos / linux / all；产物以 Actions Artifact 形式提供（不打 Release）
 name: build
 
 on:
@@ -6,6 +9,17 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      platform:
+        description: '手动/调试构建的平台（tag 推送始终构建全部平台）'
+        type: choice
+        required: true
+        default: windows
+        options:
+          - windows
+          - macos
+          - linux
+          - all
 
 # tauri-action 需要创建 Release 并上传产物 → 显式要求 contents 写权限
 # （仓库默认 Workflow permissions 是只读，会报 "Resource not accessible by integration"）
@@ -13,19 +27,35 @@ permissions:
   contents: write
 
 jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          ALL='[{"name":"windows","platform":"windows-latest","args":""},{"name":"macos-arm64","platform":"macos-latest","args":"--target aarch64-apple-darwin"},{"name":"macos-x64","platform":"macos-latest","args":"--target x86_64-apple-darwin"},{"name":"linux","platform":"ubuntu-latest","args":""}]'
+          WIN='[{"name":"windows","platform":"windows-latest","args":""}]'
+          MAC='[{"name":"macos-arm64","platform":"macos-latest","args":"--target aarch64-apple-darwin"},{"name":"macos-x64","platform":"macos-latest","args":"--target x86_64-apple-darwin"}]'
+          LIN='[{"name":"linux","platform":"ubuntu-latest","args":""}]'
+          if [ "${{ github.event_name }}" = "push" ]; then
+            M="$ALL"
+          else
+            case "${{ github.event.inputs.platform }}" in
+              macos) M="$MAC" ;;
+              linux) M="$LIN" ;;
+              all) M="$ALL" ;;
+              *) M="$WIN" ;;
+            esac
+          fi
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: select
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-latest
-            args: ''
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-          - platform: ubuntu-latest
-            args: ''
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -51,7 +81,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build with Tauri
+      - name: Build with Tauri (tag push → create Draft Release)
+        if: github.event_name == 'push'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,3 +93,15 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Build with Tauri (manual/debug → no release)
+        if: github.event_name != 'push'
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Upload bundle (manual/debug)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-${{ matrix.name }}
+          path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error

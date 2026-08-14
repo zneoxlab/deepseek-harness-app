@@ -195,6 +195,24 @@
           "markdownDescription": "Enables the dsh_detect command without any pre-configured scope."
         },
         {
+          "description": "Enables the env_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-env-detect",
+          "markdownDescription": "Enables the env_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-dsh",
+          "markdownDescription": "Enables the install_dsh command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-node",
+          "markdownDescription": "Enables the install_node command without any pre-configured scope."
+        },
+        {
           "description": "Enables the window_close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-window-close",
@@ -235,6 +253,24 @@
           "type": "string",
           "const": "deny-dsh-detect",
           "markdownDescription": "Denies the dsh_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the env_detect command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-env-detect",
+          "markdownDescription": "Denies the env_detect command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-dsh",
+          "markdownDescription": "Denies the install_dsh command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-node",
+          "markdownDescription": "Denies the install_node command without any pre-configured scope."
         },
         {
           "description": "Denies the window_close command without any pre-configured scope.",
