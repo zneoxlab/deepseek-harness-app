@@ -10,6 +10,7 @@
     "allow-env-detect",
     "allow-install-node",
     "allow-install-dsh",
+    "allow-register-managed-path",
     "allow-app-info",
     "allow-window-minimize",
     "allow-window-toggle-maximize",

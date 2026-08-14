@@ -238,6 +238,7 @@ export default function App() {
   const [env, setEnv] = useState<EnvStatus | null>(null);
   const [installLog, setInstallLog] = useState<InstallEvent[]>([]);
   const [installing, setInstalling] = useState<"node" | "dsh" | null>(null);
+  const [addToPath, setAddToPath] = useState(true);
 
   const detect = async () => {
     setState({ phase: "checking" });
@@ -296,8 +297,28 @@ export default function App() {
       const e = await invoke<EnvStatus>("env_detect", { lang: navigator.language });
       setEnv(e);
       if (e.dsh.present) {
-        // dsh 就绪 → 自动连接
+        // dsh 就绪 → 可选注册用户 PATH（终端可用）→ 自动连接
         setInstalling(null);
+        if (addToPath) {
+          try {
+            await invoke("register_managed_path");
+            setInstallLog((log) => [
+              ...log,
+              {
+                stage: "done",
+                message: t(
+                  "已加入用户 PATH（新开终端即可用 node/npm/dsh）",
+                  "Added to user PATH (node/npm/dsh available in new terminals)",
+                ),
+              },
+            ]);
+          } catch (err) {
+            setInstallLog((log) => [
+              ...log,
+              { stage: "error", message: t("PATH 注册失败：", "PATH registration failed: ") + String(err) },
+            ]);
+          }
+        }
         detect();
       } else if (!e.dsh.present) {
         // node 就绪但 dsh 未装 → 自动链式安装 dsh
@@ -453,6 +474,20 @@ export default function App() {
               </div>
             )}
 
+            {/* PATH 选项 */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12.5, color: "#374151", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={addToPath}
+                onChange={(e) => setAddToPath(e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              {t(
+                "装完后加入用户 PATH，让终端（PowerShell 等）也能直接用 node / npm / dsh",
+                "Also add node / npm / dsh to the user PATH so terminals can use them",
+              )}
+            </label>
+
             {/* 高级选项 */}
             <div style={styles.advanced}>
               <button style={styles.linkBtn} onClick={detect}>
@@ -489,7 +524,10 @@ export default function App() {
       {state.phase === "error" && (
         <>
           <p style={styles.title}>{t("连接失败", "Connection failed")}</p>
-          <p style={styles.err}>{state.message}</p>
+          <p style={styles.err}>{localizeError(state.message)}</p>
+          <div style={{ ...styles.logBox, maxWidth: 560, marginTop: 0 }}>
+            <div style={styles.logErr}>{state.message}</div>
+          </div>
           <button style={styles.retryBtn} onClick={detect}>
             {t("重试", "Retry")}
           </button>

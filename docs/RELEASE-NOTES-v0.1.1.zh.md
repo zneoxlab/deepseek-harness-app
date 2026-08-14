@@ -29,6 +29,10 @@ DeepSeek Harness App（dsh-app）是 [DeepSeek Harness](https://github.com/deeps
 - 🔓 **一键安装命令被 ACL 拦截**：`env_detect` / `install_node` / `install_dsh` 补入权限清单与 capability 白名单（此前点击安装会报 `Command install_node not allowed by ACL`）
 - 🪟 **Windows 上 Node 解压布局错误**：改用系统自带 tar（bsdtar）解压并拍平顶层目录（此前 `Expand-Archive` 会保留 zip 顶层文件夹，导致 Node 安装后验证失败）
 - 🌏 **Windows 时区识别**：新增注册表时区检测（中国标准时间），中文 + 中国时区的 Windows 机器现在会正确走国内镜像
+- 🪟 **Windows `.cmd` 执行**：npm/dsh 的 `.cmd` shim 改为经 `cmd /C` 执行（此前报"不是有效的 Win32 应用程序"，os error 193）
+- 🔗 **Windows bridge 链接**：mklink 参数加引号（安装到 `Program Files` 等含空格路径时 junction 才能建成），失败即报错
+- 🩺 **启动失败不再盲超时**：连接超时会带出 dsh web 子进程的真实报错（stderr 尾部 + 退出码），错误页直接显示
+- ➕ **PATH 注册选项**：向导可勾选"加入用户 PATH"，装完后终端新窗口可直接用 node / npm / dsh（用户级、免管理员、幂等，默认开启）
 
 > Node 安装到 `~/.dsh-app/node`、dsh 装到 `~/.dsh-app/npm-global`，**仅应用内使用，不改系统 PATH**——这是有意的：免管理员、不影响你原有的 Node 环境。想在终端里用这个 Node，可手动把对应目录加入 PATH。
 

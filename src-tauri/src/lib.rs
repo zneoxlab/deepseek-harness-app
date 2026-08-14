@@ -10,7 +10,7 @@
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -170,8 +170,9 @@ enum ConnectError {
     DshNotFound,
     #[error("[SPAWN_FAILED] Failed to start dsh web: {0}")]
     Spawn(String),
-    #[error("[CONNECT_TIMEOUT] Timed out waiting for dsh web (30s)")]
-    Timeout,
+    /// 带子进程 stderr 尾部/退出状态, 不再盲超时。
+    #[error("[CONNECT_TIMEOUT] Timed out waiting for dsh web (30s). {0}")]
+    Timeout(String),
     #[error("[CONNECT_IO] Cannot reach the DeepSeek Harness web UI: {0}")]
     Io(String),
 }
@@ -182,7 +183,7 @@ impl ConnectError {
         match self {
             ConnectError::DshNotFound => "DSH_NOT_FOUND",
             ConnectError::Spawn(_) => "SPAWN_FAILED",
-            ConnectError::Timeout => "CONNECT_TIMEOUT",
+            ConnectError::Timeout(_) => "CONNECT_TIMEOUT",
             ConnectError::Io(_) => "CONNECT_IO",
         }
     }
@@ -212,6 +213,7 @@ pub fn run() {
             env_detect,
             install_node,
             install_dsh,
+            register_managed_path,
             app_info,
             window_minimize,
             window_toggle_maximize,
@@ -382,7 +384,9 @@ fn connect_and_navigate(app: &tauri::AppHandle) -> Result<(), ConnectError> {
         }
         thread::sleep(Duration::from_millis(100));
     }
-    Err(ConnectError::Timeout)
+    Err(ConnectError::Timeout(
+        "dsh web process started but the port was never announced".to_string(),
+    ))
 }
 
 fn navigate_to(win: &WebviewWindow, url: &str) -> Result<(), ConnectError> {
@@ -715,12 +719,21 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Res
     if !link.exists() {
         #[cfg(windows)]
         {
-            // 目录 junction（无需管理员权限）
+            // 目录 junction（无需管理员权限）。路径可能含空格
+            // （如 C:\Program Files\DSH\...），必须加引号, 否则 mklink 会把
+            // 目标拆成多个参数导致链接失败。
+            let cmdline = format!(
+                "mklink /J \"{}\" \"{}\"",
+                link.display(),
+                bridge_abs.display()
+            );
             let mut mklink = std::process::Command::new("cmd");
-            mklink
-                .args(["/C", "mklink", "/J", &link.display().to_string(), &bridge_abs.display().to_string()]);
+            mklink.arg("/C").arg(&cmdline);
             no_console(&mut mklink);
-            let _ = mklink.status();
+            let st = mklink.status().map_err(|e| format!("mklink: {e}"))?;
+            if !st.success() {
+                return Err(format!("mklink junction failed (exit {st}): {cmdline}"));
+            }
         }
         #[cfg(not(windows))]
         {
@@ -1285,6 +1298,64 @@ fn run_streaming(cmd: &mut Command, app: &tauri::AppHandle) -> Result<(), String
     }
 }
 
+/// 把托管环境目录注册进用户级 PATH（免管理员、幂等），
+/// 让终端（PowerShell/zsh/bash）新窗口也能直接用 node/npm/dsh。
+#[tauri::command]
+fn register_managed_path() -> Result<(), String> {
+    let Some(home) = home_dir() else {
+        return Err("cannot resolve home dir".into());
+    };
+    let node_dir = home.join(MANAGED_NODE_DIR);
+    let global_dir = home.join(MANAGED_GLOBAL_DIR);
+    if !node_dir.is_dir() || !global_dir.is_dir() {
+        return Err("managed environment not installed yet".into());
+    }
+
+    #[cfg(windows)]
+    {
+        // 写用户级 PATH（HKCU\Environment），免管理员; 幂等。
+        let script = format!(
+            "$p=[Environment]::GetEnvironmentVariable('Path','User'); \
+             $add='{0}\\node;{0}\\npm-global'; \
+             if($p -notlike '*\\.dsh-app\\node*'){{ \
+               $np = if($p){{ $p.TrimEnd(';') + ';' + $add }} else {{ $add }}; \
+               [Environment]::SetEnvironmentVariable('Path', $np, 'User') \
+             }}",
+            home.display()
+        );
+        let mut c = Command::new("powershell");
+        c.args(["-NoProfile", "-Command", &script]);
+        no_console(&mut c);
+        let st = c.status().map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err(format!("powershell PATH registration failed (exit {st})"));
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        // 追加 export 行到 ~/.zprofile 与 ~/.profile（幂等）。
+        use std::io::Write as _;
+        let line = "# dsh-app managed env\nexport PATH=\"$HOME/.dsh-app/npm-global/bin:$HOME/.dsh-app/node/bin:$PATH\"";
+        for rc in [".zprofile", ".profile"] {
+            let path = home.join(rc);
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                if existing.contains(".dsh-app/npm-global") {
+                    continue;
+                }
+            }
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+            writeln!(f, "\n{line}").map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
 
 /// 启动 dsh web（带 dsh-app-bridge 插件）：
 /// 通过独立 profile `dsh-app` 启动，加载官方 web app + 我们的桌面桥插件，
@@ -1323,6 +1394,28 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
         .spawn()
         .map_err(|e| ConnectError::Spawn(e.to_string()))?;
 
+    // 持续排空 stderr: 防止子进程写满管道缓冲被阻塞, 并保留尾部用于诊断。
+    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let tail = Arc::clone(&stderr_tail);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                let l = line.trim();
+                if l.is_empty() {
+                    continue;
+                }
+                let mut t = tail.lock().unwrap();
+                t.push_str(&l.chars().take(300).collect::<String>());
+                t.push('\n');
+                let lines: Vec<&str> = t.lines().collect();
+                if lines.len() > 8 {
+                    *t = format!("{}\n", lines[lines.len() - 8..].join("\n"));
+                }
+            }
+        });
+    }
+
     // 读取就绪行: stdout 是 piped, 在这里阻塞读几行直到匹配。
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout);
@@ -1331,7 +1424,7 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
         while std::time::Instant::now() < deadline {
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break, // EOF
+                Ok(0) => break, // EOF: 子进程已退出
                 Ok(_) => {
                     let trimmed = line.trim();
                     if let Some(idx) = trimmed.find(READY_MARKER) {
@@ -1345,9 +1438,18 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
             }
         }
     }
-    // 超时: 杀掉子进程
+    // 失败: 尽量把子进程退出状态 + stderr 尾部带出去, 不再盲超时。
+    let exit = child.try_wait().ok().flatten();
+    let stderr_msg = stderr_tail.lock().unwrap().trim().to_string();
     let _ = child.kill();
-    Err(ConnectError::Timeout)
+    let detail = if !stderr_msg.is_empty() {
+        format!("dsh web 输出: {stderr_msg}")
+    } else if let Some(st) = exit {
+        format!("dsh web 未就绪即退出: {st}")
+    } else {
+        "dsh web 未在 30 秒内输出就绪行".to_string()
+    };
+    Err(ConnectError::Timeout(detail))
 }
 
 fn parse_port_from_url(url_part: &str) -> Option<u16> {

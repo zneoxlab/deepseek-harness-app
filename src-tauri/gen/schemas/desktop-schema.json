@@ -213,6 +213,12 @@
           "markdownDescription": "Enables the install_node command without any pre-configured scope."
         },
         {
+          "description": "Enables the register_managed_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-register-managed-path",
+          "markdownDescription": "Enables the register_managed_path command without any pre-configured scope."
+        },
+        {
           "description": "Enables the window_close command without any pre-configured scope.",
           "type": "string",
           "const": "allow-window-close",
@@ -271,6 +277,12 @@
           "type": "string",
           "const": "deny-install-node",
           "markdownDescription": "Denies the install_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the register_managed_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-register-managed-path",
+          "markdownDescription": "Denies the register_managed_path command without any pre-configured scope."
         },
         {
           "description": "Denies the window_close command without any pre-configured scope.",

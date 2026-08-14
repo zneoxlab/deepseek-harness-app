@@ -29,6 +29,10 @@ Everything else from v0.1.0 is unchanged (smart connect, tray, fused title bar, 
 - 🔓 **One-click install commands were blocked by the ACL**: `env_detect` / `install_node` / `install_dsh` were missing from the permission set and capability whitelist (clicking Install failed with `Command install_node not allowed by ACL`)
 - 🪟 **Wrong Node archive layout on Windows**: switched to the built-in tar (bsdtar) with `--strip-components=1` for extraction (PowerShell `Expand-Archive` kept the zip's top-level folder, so Node verification failed after "installing")
 - 🌏 **Timezone detection on Windows**: added a registry check for China Standard Time, so Chinese-language Windows machines on China time now correctly use the domestic mirror
+- 🪟 **Windows `.cmd` execution**: npm/dsh `.cmd` shims now run through `cmd /C` (previously failed with "not a valid Win32 application", os error 193)
+- 🔗 **Windows bridge link**: quoted mklink arguments (junctions now work when the app is installed under paths with spaces such as `Program Files`), and failures are reported instead of ignored
+- 🩺 **No more blind timeouts**: connect timeouts now surface the real dsh web error (stderr tail + exit status), shown directly on the error page
+- ➕ **PATH option**: an opt-in "add to user PATH" checkbox makes node / npm / dsh available in new terminals after install (user-level, no admin, idempotent, on by default)
 
 > Node is installed to `~/.dsh-app/node` and dsh to `~/.dsh-app/npm-global`, **app-local only — the system PATH is never modified** (by design: no admin rights, and your existing Node environment is untouched). To also use this Node in your terminal, add that directory to PATH manually.
 
