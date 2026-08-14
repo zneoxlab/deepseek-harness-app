@@ -833,7 +833,7 @@ fn dsh_detect() -> DshDetectResult {
 // 进度通过 `dsh://install` 事件 (InstallEvent) 推给前端。
 // ---------------------------------------------------------------------------
 
-const NODE_VERSION: &str = "v22.14.0";
+const NODE_VERSION: &str = "v22.23.2";
 const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
 const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
 const NODE_OFFICIAL_BASE: &str = "https://nodejs.org/dist";
@@ -1005,6 +1005,19 @@ fn probe_bin_version(bin: &str) -> Option<String> {
     }
 }
 
+/// 比较两个语义化版本字符串（v22.14.0 < v22.23.2），解析失败按 0 处理。
+fn version_less_than(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Vec<u64> {
+        s.trim()
+            .trim_start_matches('v')
+            .split(|c: char| !c.is_ascii_digit())
+            .filter(|p| !p.is_empty())
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    };
+    parse(a) < parse(b)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnvStatus {
@@ -1017,6 +1030,27 @@ struct EnvStatus {
     managed_node: Option<String>,
     /// 托管 npm 全局目录（dsh 装在这里）。
     managed_global: Option<String>,
+    /// 托管 Node 版本低于当前要求（dsh 依赖 node:zlib 的 zstd, 需 ≥ v22.15.0）。
+    node_too_old: bool,
+}
+
+/// 探测托管 Node 版本（绝对路径, 不依赖 PATH）。
+fn managed_node_version() -> Option<String> {
+    let home = home_dir()?;
+    let node_bin = if cfg!(windows) {
+        home.join(MANAGED_NODE_DIR).join("node.exe")
+    } else {
+        home.join(MANAGED_NODE_DIR).join("bin").join("node")
+    };
+    if !node_bin.is_file() {
+        return None;
+    }
+    Command::new(&node_bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
 /// 分步环境检测: node / npm / dsh 的状态 + 镜像策略。
@@ -1026,6 +1060,9 @@ fn env_detect(lang: Option<String>) -> EnvStatus {
         Some((e, _)) => (Some(e.display().to_string()), probe_dsh_version(&e)),
         None => (None, None),
     };
+    let node_too_old = managed_node_version()
+        .map(|v| version_less_than(&v, NODE_VERSION))
+        .unwrap_or(false);
     EnvStatus {
         node: ToolStatus::probe("node"),
         npm: ToolStatus::probe("npm"),
@@ -1037,6 +1074,7 @@ fn env_detect(lang: Option<String>) -> EnvStatus {
         use_mirror: use_mirror(lang.as_deref()),
         managed_node: home_dir().map(|h| h.join(MANAGED_NODE_DIR).display().to_string()),
         managed_global: home_dir().map(|h| h.join(MANAGED_GLOBAL_DIR).display().to_string()),
+        node_too_old,
     }
 }
 

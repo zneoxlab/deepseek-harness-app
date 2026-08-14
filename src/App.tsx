@@ -25,6 +25,7 @@ type EnvStatus = {
   useMirror: boolean;
   managedNode: string | null;
   managedGlobal: string | null;
+  nodeTooOld: boolean;
 };
 
 type InstallEvent = {
@@ -420,15 +421,28 @@ export default function App() {
               <div style={styles.stepBody}>
                 <p style={styles.stepTitle}>{t("Node.js 运行环境", "Node.js runtime")}</p>
                 <p style={styles.stepMeta}>
-                  {env?.npm.present
-                    ? t("npm", "npm") + ` ${env.npm.version}`
-                    : env?.node.present
-                      ? t("npm 未检测到", "npm not detected")
-                      : t("未检测到 node 与 npm", "Neither node nor npm detected")}
+                  {env?.nodeTooOld ? (
+                    <span style={{ color: "#b45309" }}>
+                      {t(
+                        `Node 版本过低（${env.node.version}，dsh 需要 ≥ v22.15.0 的 zstd 支持），请升级`,
+                        `Node too old (${env.node.version}; dsh needs zstd from ≥ v22.15.0) — please upgrade`,
+                      )}
+                    </span>
+                  ) : env?.npm.present ? (
+                    t("npm", "npm") + ` ${env.npm.version}`
+                  ) : env?.node.present ? (
+                    t("npm 未检测到", "npm not detected")
+                  ) : (
+                    t("未检测到 node 与 npm", "Neither node nor npm detected")
+                  )}
                   {env?.managedNode ? ` · ${env.managedNode}` : ""}
                 </p>
               </div>
-              {env?.node.present ? (
+              {env?.nodeTooOld ? (
+                <button style={styles.installBtn} onClick={() => startInstall("node")}>
+                  {installing === "node" ? t("升级中…", "Upgrading…") : t("升级 Node", "Upgrade Node")}
+                </button>
+              ) : env?.node.present ? (
                 stepStatus(env.node, t("Node", "Node"))
               ) : installing === "node" ? (
                 <span style={styles.chipMissing}>{t("安装中…", "Installing…")}</span>
