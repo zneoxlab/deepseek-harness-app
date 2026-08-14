@@ -1,7 +1,7 @@
 {
   "name": "dsh-app-bridge",
   "version": "0.1.0",
-  "description": "DSH App desktop-shell bridge: fused title bar + DSH App settings page (about & update check) inside the official DSH Web UI",
+  "description": "DSH App desktop-shell bridge: fused title bar + DSH App settings page (about & update check) + first-run model presets pre-written into the official llm-pi-ai model configuration (no separate UI — Settings → Models is the only surface)",
   "type": "module",
   "main": "lib/server.js",
   "exports": {

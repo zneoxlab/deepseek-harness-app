@@ -19,11 +19,47 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WebviewWindow};
 
+// P1 桌面增强层模块（见 docs/P1-design.md 与 docs/P1-integration-checklist.md）:
+mod connect;
+mod desktop;
+mod notify;
+
 /// 默认探测目标: 官方 `dsh web` 的监听地址。
 const DEFAULT_URL: &str = "http://127.0.0.1:3080";
 
 /// `dsh web` 打印的就绪行, 例如 `dsh web: http://127.0.0.1:PORT`。
 const READY_MARKER: &str = "dsh web:";
+
+// ---------------------------------------------------------------------------
+// macOS 原生窗口边框
+//
+// 窗口使用原生标题栏（红绿灯 + 原生圆角 + 阴影 + Transparent 透明标题栏）。
+// tao 的 set_decorations 通过 dispatch_async 应用 styleMask（异步），
+// 若在其生效前 show 窗口, 会闪现一帧无边框方形窗口 —— 这里直接用 objc2
+// 同步设置 mask, 保证窗口首帧就是原生外观。
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+mod mac_window {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSWindow, NSWindowStyleMask};
+
+    /// 同步应用原生窗口边框与透明标题栏。
+    pub fn apply_native_frame(ns_window: *mut std::ffi::c_void) {
+        let _mtm = MainThreadMarker::new().expect("mac_window::apply_native_frame must run on the main thread");
+        // SAFETY: tauri 保证 ns_window 是有效的 NSWindow 指针。
+        let win: &NSWindow = unsafe { &*(ns_window as *const NSWindow) };
+        let mut mask = win.styleMask();
+        mask.insert(
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable
+                | NSWindowStyleMask::Resizable,
+        );
+        win.setStyleMask(mask);
+        win.setTitlebarAppearsTransparent(true);
+    }
+}
 
 /// Windows: 隐藏子进程的控制台窗口（node.exe / cmd.exe 不再弹黑框）。
 #[cfg(windows)]
@@ -119,8 +155,9 @@ fn login_shell_path_once(shell: &str) -> Option<String> {
     if finished { Some(out) } else { None }
 }
 
-/// 持有拉起的 `dsh web` 子进程与它的 URL, 退出时整树清理。
-struct ServerState(Mutex<Option<(Child, String)>>);
+/// 持有拉起的 `dsh web` 子进程 pid 与它的 URL。退出时按 pid 清理;
+/// 意外退出检测由 spawn 侧的监控线程负责（wait 后检查 state 是否仍持有该 pid）。
+struct ServerState(Mutex<Option<(u32, String)>>);
 
 /// 前端可读的 dsh CLI 检测结果。
 #[derive(Debug, Clone, Serialize)]
@@ -212,7 +249,18 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
+        // P1: 桌面通知 / 开机自启（--hidden 静默启动）/ 全局快捷键。
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(ServerState(Mutex::new(None)))
+        // P1: 桌面壳偏好设置（~/.dsh-app/settings.json，与官方 ~/.dsh 分离）。
+        .manage(Mutex::new(connect::AppSettings::load()))
+        // P1: 通知回传上下文（reply_id → 待回答的 question）。
+        .manage(notify::NotifyState(Mutex::new(std::collections::HashMap::new())))
         .invoke_handler(tauri::generate_handler![
             dsh_detect,
             dsh_connect,
@@ -224,10 +272,67 @@ pub fn run() {
             window_minimize,
             window_toggle_maximize,
             window_close,
-            window_start_dragging
+            window_start_dragging,
+            window_set_theme,
+            save_settings,
+            get_settings,
+            desktop_notify
         ])
         .setup(|app| {
+            // macOS: 无边框窗口是方形且没有原生阴影。改回原生标题栏
+            // (Titled mask → 原生圆角 + 阴影 + 红绿灯)。用 Transparent 风格
+            // (而非 Overlay): 内容**不**延伸到标题栏下方, WebView 视口从
+            // 标题栏下缘开始 —— 官方 UI 永远不会与红绿灯重叠, 行为确定。
+            // 标题栏外观通过 window_set_theme 跟随应用内深浅色设置。
+            // 顺序关键: 先 set_decorations(true) (重建 style mask), 再
+            // set_title_bar_style(Transparent) (透明标题栏 + 关闭全尺寸内容)。
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_decorations(true);
+                let _ = w.set_title_bar_style(tauri::TitleBarStyle::Transparent);
+                // 同步补上原生 mask（set_decorations 是异步的, 见 apply_native_frame）,
+                // 保证窗口首帧就是原生标题栏 + 圆角。
+                if let Ok(ns_win) = w.ns_window() {
+                    mac_window::apply_native_frame(ns_win);
+                }
+            }
+            // 窗口配置为 visible:false (避免 macOS 先以无边框方形闪现一帧),
+            // 这里统一显示。P1 开机自启用 `--hidden` 启动: 静默驻留托盘不弹窗。
+            let start_hidden = std::env::args().any(|a| a == "--hidden");
+            if !start_hidden {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                }
+            }
+
+            // P1: 应用设置里的全局快捷键（注册失败降级为仅托盘，不崩溃）。
+            {
+                let settings = app.state::<Mutex<connect::AppSettings>>();
+                let shortcut = settings.lock().unwrap().shortcut.clone();
+                if let Err(e) = desktop::register_global_shortcut(app.handle(), &shortcut) {
+                    eprintln!("[dsh-app] warning: global shortcut registration failed: {e}");
+                }
+            }
+
+            // P1: 若上次保存过开机自启, 启动时幂等补一次（防止注册项丢失）。
+            {
+                let settings = app.state::<Mutex<connect::AppSettings>>();
+                let autostart = settings.lock().unwrap().autostart;
+                if autostart {
+                    if let Err(e) = desktop::set_autostart(app.handle(), true) {
+                        eprintln!("[dsh-app] warning: autostart re-apply failed: {e}");
+                    }
+                }
+            }
+
             setup_tray(app)?;
+
+            // P1: macOS 通知权限。放在窗口显示之后 + 内部延迟 3 秒:
+            // 首次请求时系统需要 app 处于前台激活状态才会弹权限框,
+            // 启动早期（窗口还 hidden）请求会被静默拒绝。
+            #[cfg(target_os = "macos")]
+            notify::ensure_permission();
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -283,6 +388,19 @@ fn window_close(app: tauri::AppHandle) -> Result<(), String> {
 fn window_start_dragging(app: tauri::AppHandle) -> Result<(), String> {
     let win = app.get_webview_window("main").ok_or("no main window")?;
     win.start_dragging().map_err(|e| e.to_string())
+}
+
+/// 跟随应用内主题（官方 UI body[data-ds-dark-theme]）设置窗口外观:
+/// macOS 原生标题栏/红绿灯跟随深浅色; "auto" 恢复跟随系统。
+#[tauri::command]
+fn window_set_theme(theme: String, app: tauri::AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("no main window")?;
+    let t = match theme.as_str() {
+        "dark" => Some(tauri::Theme::Dark),
+        "light" => Some(tauri::Theme::Light),
+        _ => None,
+    };
+    win.set_theme(t).map_err(|e| e.to_string())
 }
 
 /// 桌面端信息（设置页"关于"区块 + 更新监测用）。
@@ -352,7 +470,10 @@ fn dsh_connect(app: tauri::AppHandle) -> Result<(), String> {
         }
         return Ok(());
     }
-    if probe_bridge_ready() {
+    // 复用 3080 上带桌面桥的实例 —— 仅智能模式; 显式连接必须连用户给的 URL。
+    let settings = app.state::<Mutex<connect::AppSettings>>();
+    let smart_mode = matches!(settings.lock().unwrap().connect, connect::ConnectTarget::Smart);
+    if smart_mode && probe_bridge_ready() {
         // 复用 3080 上带桌面桥的实例
         if let Some(win) = app.get_webview_window("main") {
             let _ = navigate_to(&win, DEFAULT_URL);
@@ -368,17 +489,61 @@ fn dsh_connect(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn connect_and_navigate(app: &tauri::AppHandle) -> Result<(), ConnectError> {
-    let url = if probe_bridge_ready() {
-        // 已有带桌面桥的实例在跑: 直接复用
-        DEFAULT_URL.to_string()
-    } else {
-        let _ = app.emit("dsh://phase", "starting:");
-        let (child, port) = spawn_dsh_web(app)?;
-        let url = format!("http://127.0.0.1:{port}");
-        if let Some(state) = app.try_state::<ServerState>() {
-            *state.0.lock().unwrap() = Some((child, url.clone()));
+    // P1: 按设置里的连接模式决定目标地址。
+    let settings = app.state::<Mutex<connect::AppSettings>>();
+    let target = settings.lock().unwrap().connect.clone();
+    let url = match target {
+        connect::ConnectTarget::Smart => {
+            if probe_bridge_ready() {
+                // 已有带桌面桥的实例在跑: 直接复用
+                DEFAULT_URL.to_string()
+            } else {
+                let _ = app.emit("dsh://phase", "starting:");
+                let (mut child, port) = spawn_dsh_web(app)?;
+                let url = format!("http://127.0.0.1:{port}");
+                let pid = child.id();
+                if let Some(state) = app.try_state::<ServerState>() {
+                    *state.0.lock().unwrap() = Some((pid, url.clone()));
+                }
+                // 意外退出监控: 主动 kill 会先把 state take 掉, 这里只剩
+                // "进程自己挂了"的情况 → 桌面通知（出错报警）。
+                {
+                    let app2 = app.clone();
+                    thread::spawn(move || {
+                        let status = child.wait();
+                        let still_owned = app2
+                            .try_state::<ServerState>()
+                            .map(|s| {
+                                s.0.lock()
+                                    .ok()
+                                    .and_then(|g| g.as_ref().map(|(p, _)| *p == pid))
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if still_owned {
+                            if let Some(s) = app2.try_state::<ServerState>() {
+                                if let Ok(mut g) = s.0.lock() {
+                                    let _ = g.take();
+                                }
+                            }
+                            notify::on_server_event(&app2, "exited");
+                        }
+                        eprintln!("[dsh-app] dsh web child (pid {pid}) exited: {status:?}");
+                    });
+                }
+                url
+            }
         }
-        url
+        connect::ConnectTarget::Explicit(raw) => {
+            // 显式连接: 仅允许 http/https，校验可达后导航。
+            let url = connect::sanitize_url(&raw).ok_or_else(|| {
+                ConnectError::Io("无效的 URL：仅支持 http:// 或 https://".to_string())
+            })?;
+            if !connect::probe_url(&url) {
+                return Err(ConnectError::Io(format!("无法连接到 {url}")));
+            }
+            url
+        }
     };
 
     // 等窗口出现再导航 (splash 先渲染, 避免白屏)
@@ -401,18 +566,6 @@ fn navigate_to(win: &WebviewWindow, url: &str) -> Result<(), ConnectError> {
         .map_err(|e| ConnectError::Io(e.to_string()))?;
     win.navigate(parsed)
         .map_err(|e| ConnectError::Io(e.to_string()))
-}
-
-/// 探测 127.0.0.1:3080 是否有 HTTP 服务在监听。
-fn probe_ready(url: &str) -> bool {
-    let hostport = url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/');
-    match hostport.parse::<std::net::SocketAddr>() {
-        Ok(addr) => TcpStream::connect_timeout(&addr, Duration::from_millis(800)).is_ok(),
-        Err(_) => false,
-    }
 }
 
 /// 探测 127.0.0.1:3080 是否运行着**带桌面桥**的 dsh web 实例。
@@ -1602,30 +1755,31 @@ fn parse_port_from_url(url_part: &str) -> Option<u16> {
 
 fn kill_spawned_server(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<ServerState>() {
-        if let Ok(mut guard) = state.0.lock() {
-            if let Some((mut child, _url)) = guard.take() {
-                tree_kill(&mut child);
-            }
+        let pid = state
+            .0
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take().map(|(pid, _)| pid));
+        if let Some(pid) = pid {
+            kill_pid_tree(pid);
         }
     }
 }
 
-/// Windows 用 taskkill /T 杀整个进程树; 其他平台直接 kill。
-fn tree_kill(child: &mut Child) {
+/// Windows 用 taskkill /T 杀整个进程树; 其他平台直接 kill（与旧 Child::kill 一致）。
+fn kill_pid_tree(pid: u32) {
     #[cfg(windows)]
     {
-        let pid = child.id();
         let mut tk = Command::new("taskkill");
         tk.args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         no_console(&mut tk);
         let _ = tk.status();
-        let _ = child.kill();
     }
     #[cfg(not(windows))]
     {
-        let _ = child.kill();
+        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
     }
 }
 
@@ -1673,5 +1827,144 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// P1: 桌面偏好设置（连接模式 / 开机自启 / 桌面通知 / 全局快捷键）
+// ---------------------------------------------------------------------------
+
+/// 前端设置页调用: 保存整份 AppSettings 并应用到桌面侧。
+#[tauri::command]
+fn save_settings(app: tauri::AppHandle, settings: connect::AppSettings) -> Result<(), String> {
+    // 显式连接: 只允许 http/https 且校验可达后才保存（见 docs/P1-design.md 安全边界）。
+    if let connect::ConnectTarget::Explicit(raw) = &settings.connect {
+        let url = connect::sanitize_url(raw)
+            .ok_or_else(|| "无效的 URL：仅支持 http:// 或 https://".to_string())?;
+        if !connect::probe_url(&url) {
+            return Err(format!("无法连接到 {url}，请检查地址与网络后重试"));
+        }
+    }
+    settings.save()?;
+    let state = app.state::<Mutex<connect::AppSettings>>();
+    *state.lock().unwrap() = settings.clone();
+    // 应用到桌面侧: 开机自启 + 全局快捷键（均幂等）。
+    desktop::set_autostart(&app, settings.autostart)?;
+    desktop::register_global_shortcut(&app, &settings.shortcut)?;
+    if settings.notifications_enabled {
+        let _ = notify::notify(
+            &app,
+            notify::NotifyRequest {
+                kind: notify::NotifyKind::Other,
+                title: "DeepSeek Harness App".to_string(),
+                body: "设置已保存".to_string(),
+                reply_id: None,
+                choices: Vec::new(),
+                open_label: "Open".to_string(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// 前端设置页调用: 读取当前桌面偏好。
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> connect::AppSettings {
+    let state = app.state::<Mutex<connect::AppSettings>>();
+    let settings = state.lock().unwrap().clone();
+    settings
+}
+
+/// 前端（dsh-app-bridge 事件监听）调用: 按设置过滤后弹桌面通知。
+///
+/// `kind` ∈ confirm / turn_complete / error / service / test / other。
+/// confirm 类可带选项按钮（macOS）: 点击后由 Rust 直接构造
+/// `POST /api/respond` 把答案回传给 dsh web, 闭环不依赖前端。
+#[tauri::command]
+fn desktop_notify(
+    app: tauri::AppHandle,
+    kind: String,
+    title: String,
+    body: String,
+    reply_id: Option<String>,
+    session_id: Option<String>,
+    question_id: Option<String>,
+    choices: Option<Vec<String>>,
+    open_label: Option<String>,
+) -> Result<(), String> {
+    let kind_raw = kind.clone();
+    let kind = notify::NotifyKind::parse(&kind);
+    let choices: Vec<(String, String)> = choices
+        .unwrap_or_default()
+        .into_iter()
+        .take(3)
+        .enumerate()
+        .map(|(i, label)| (format!("a{i}"), label))
+        .collect();
+
+    // 测试按钮兜底: 授权仍为 NotDetermined 时现场请求一次（此刻 app 在前台,
+    // 系统会弹权限框; 已授权/已拒绝则幂等返回, 不会重复弹框）。
+    #[cfg(target_os = "macos")]
+    if kind_raw == "test" {
+        let _ = notify_rust::request_auth_blocking();
+    }
+
+    // 开关/失焦检查不过 → 不弹通知, 也不登记回传上下文（避免悬挂）。
+    if !notify::should_notify(&app, kind) {
+        notify::diag_log(&format!(
+            "desktop_notify(kind={kind_raw}): skipped by settings/focus (permission={})",
+            notify::permission_description()
+        ));
+        return Ok(());
+    }
+
+    // confirm 且带完整回传上下文 → 登记, 供选项按钮点击后回传答案。
+    if let (Some(rid), Some(sid), Some(qid)) = (&reply_id, &session_id, &question_id) {
+        notify::register_pending(
+            &app,
+            rid,
+            notify::PendingQuestion {
+                url: current_service_url(&app),
+                session_id: sid.clone(),
+                question_id: qid.clone(),
+                options: choices.iter().map(|(_, l)| l.clone()).collect(),
+            },
+        );
+    }
+
+    let result = notify::notify(
+        &app,
+        notify::NotifyRequest {
+            kind,
+            title,
+            body,
+            reply_id,
+            choices,
+            open_label: open_label.unwrap_or_else(|| "Open".to_string()),
+        },
+    );
+    match &result {
+        Ok(()) => notify::diag_log(&format!("desktop_notify(kind={kind_raw}): sent OK")),
+        Err(e) => notify::diag_log(&format!("desktop_notify(kind={kind_raw}): FAILED: {e}")),
+    }
+    // 测试按钮场景: 把系统授权状态附进错误, 让用户在 UI 里直接看到原因。
+    result.map_err(|e| {
+        if kind_raw == "test" {
+            format!("{e}。系统通知状态: {}", notify::permission_description())
+        } else {
+            e
+        }
+    })
+}
+
+/// 当前 dsh web 服务地址（通知回传 POST /api/respond 用）。
+fn current_service_url(app: &tauri::AppHandle) -> String {
+    if let Some(state) = app.try_state::<ServerState>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some((_, url)) = guard.as_ref() {
+                return url.clone();
+            }
+        }
+    }
+    DEFAULT_URL.to_string()
 }
 

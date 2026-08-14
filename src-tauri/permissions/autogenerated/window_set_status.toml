@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-window-set-status"
+description = "Enables the window_set_status command without any pre-configured scope."
+commands.allow = ["window_set_status"]
+
+[[permission]]
+identifier = "deny-window-set-status"
+description = "Denies the window_set_status command without any pre-configured scope."
+commands.deny = ["window_set_status"]

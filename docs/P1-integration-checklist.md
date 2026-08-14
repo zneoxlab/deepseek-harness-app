@@ -1,7 +1,25 @@
 # P1 合入清单（等 P0 编译完成后执行）
 
-> 目的：把 `src-tauri/src/{connect,notify,desktop}.rs` 三个参考模块接入
-> 现有 `lib.rs`，并添加对应 Tauri 插件。按顺序执行。
+> **状态：✅ 已执行（2026-08-14）**，`cargo check` 通过、`connect` 模块单元测试通过、
+> bridge 客户端构建通过、完整 `npm run tauri build` 通过。
+>
+> **实际差异**（相对本清单）：
+> - 前端设置界面不在 `src/SettingsPanel.tsx`（该文件不存在），而是
+>   **dsh-app-bridge 客户端**注入官方 Web UI 的设置页（`settings.section` 槽，
+>   id `dsh-app-desktop`），通过 `window.__TAURI_INTERNALS__.invoke` 调
+>   `get_settings` / `save_settings`。
+> - `save_settings` 额外校验显式连接 URL：仅 http/https 且可达才保存
+>   （`docs/P1-design.md` §4 安全边界）。
+> - `connect_and_navigate` 的智能模式保留 P0 的**桥感知**探测
+>   （`probe_bridge_ready`，只复用带桌面桥的 3080 实例），未改用
+>   参考模块的裸 TCP 探测。
+> - 开机自启插件注册参数 `--hidden`，`lib.rs` 的 `setup` 解析该参数
+>   静默启动（驻留托盘不弹窗）。
+> - `desktop.rs` 的 `register_global_shortcut` 先 `unregister_all` 再注册，
+>   保证设置页重复保存幂等。
+
+目的：把 `src-tauri/src/{connect,notify,desktop}.rs` 三个参考模块接入
+现有 `lib.rs`，并添加对应 Tauri 插件。按顺序执行。
 
 ## 1. Cargo.toml 添加依赖
 

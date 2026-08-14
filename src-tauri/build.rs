@@ -11,6 +11,9 @@ fn main() {
                 "window_toggle_maximize",
                 "window_close",
                 "window_start_dragging",
+                "window_set_theme",
+                "save_settings",
+                "get_settings",
             ]),
         ),
     )

@@ -21,7 +21,9 @@
         "center": true,
         "resizable": true,
         "decorations": false,
-        "shadow": true
+        "visible": false,
+        "shadow": true,
+        "titleBarStyle": "Transparent"
       }
     ],
     "security": {
@@ -31,6 +33,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "resources": {
       "../dsh-app-bridge": "dsh-app-bridge"
     },

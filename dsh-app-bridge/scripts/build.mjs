@@ -58,13 +58,15 @@ writeFileSync(libDir + "/client.js", wrapped);
 console.log("client bundle OK (" + wrapped.length + " bytes, wrapped)");
 
 // Sanity: externals must resolve through the shell module table only.
+// `require("react")` → spec `react`: slice past `require("` (9 chars) and
+// drop the trailing `"` (one char before the final `)`).
 const requires = raw.match(/require\("[^"]+"\)/g) ?? [];
 const allowed = (spec) =>
   spec === "react" ||
   spec === "react-dom" ||
   spec.startsWith("react/") || // react/jsx-runtime etc. — shell seeds
   spec.startsWith("@deepseek-ai/");
-const bad = requires.filter((r) => !allowed(r.slice(9, -1)));
+const bad = requires.filter((r) => !allowed(r.slice(9, -2)));
 if (bad.length > 0) {
   console.error("client bundle has unexpected requires:", bad);
   process.exit(1);

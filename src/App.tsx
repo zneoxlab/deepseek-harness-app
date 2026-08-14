@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { localizeError, t } from "./i18n";
-import TitleBar from "./TitleBar";
+import WindowControls from "./WindowControls";
 
 type DshDetect = {
   available: boolean;
@@ -382,7 +382,7 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", width: "100vw", overflow: "hidden" }}>
-      <TitleBar />
+      <WindowControls />
       <div style={styles.wrap}>
       <div style={styles.logo}>
         <img src="/favicon.svg" alt="DeepSeek Harness" style={styles.logoImg} />

@@ -54,15 +54,17 @@ That is why **DeepSeek Harness App builds on the official web UI instead of rein
 |------|----------------|
 | **Smart connect** | Detects `dsh` CLI (DSH_BIN → npm global → PATH); reuses a running **bridge-enabled** instance on `127.0.0.1:3080`, otherwise starts its own `dsh --profile dsh-app --port 0` on a free random port (a plain `dsh web` you started manually is left alone) |
 | **dsh CLI detection** | Startup wizard when the CLI is missing — copy the install command, re-check with one click |
-| **Fused title bar** | Borderless window (`decorations: false`); minimize / maximize / close, drag area and a live **connected / disconnected** status dot live inside the Web UI. Colors follow the official theme (dark / light / system) |
-| **DSH App settings page** | A page registered into the official settings panel: about info (app version, dsh CLI version/source, service URL, source-code link) and **update management** against GitHub Releases |
+| **Fused title bar** | A borderless window with a title bar fused into the system frame, per-platform window buttons: **macOS** uses the native title bar entirely (real system traffic lights, native rounded corners and shadow); **Windows** draws Win11-style square caption buttons at the top-right; **Linux** draws neutral circle buttons at the top-left. Windows 11 rounds the whole window automatically (undecorated + shadow). The strip is the drag region; double-click maximizes. Title bar colors follow the **in-app theme** (dark / light / system) on every platform |
+| **Sidebar status row** | A status capsule (**colored dot + 已连接 / 未连接**) with the app version right-aligned on the same row, at the very bottom of the sidebar **below the settings button** (registered through the official `sidebar.footer.action` slot; the settings row moves up one slot) |
+| **DSH App settings page** | A page registered into the official settings panel: app info (version, source-code link) + **update management against GitHub Releases**; dsh CLI info (version / source / service URL) + **CLI update management** (latest check against the npm registry, one-click update, copy update command) |
+| **Model Presets** | Fused into the **original model configuration**, no separate page: on the first boot the bridge server pre-writes mainstream channels (DeepSeek / OpenAI / Anthropic / Google Gemini / OpenRouter / xAI / Moonshot / MiniMax / Zhipu GLM / Mistral / Groq / Together) into the official `llm-pi-ai` namespace — they show up under Settings → Models as already-configured routes with their built-in model catalogs enabled; you only fill the API key there. Once any provider is configured the presets never run again, so removed channels never come back |
 | **System tray** | Close-to-tray; left-click shows the window; Quit cleans up the whole dsh process tree (no orphans) |
 | **Single instance** | A second launch focuses the existing window instead of spawning another server |
 | **Windows ready** | Falls back to `DSH_PERMISSION_MODE=danger-full-access` when unset (no confinement backend on Windows) |
 | **i18n** | UI follows the system language (Simplified Chinese / English), including the DSH App settings page |
 | **Native icons** | Official dsh favicon (the whale) as the app icon across platforms |
 
-**Planned (P1):** desktop notifications · autostart · global shortcut · connect modes (remote/container web UI)
+**Desktop layer (P1):** desktop notifications · autostart (silent tray via `--hidden`) · global shortcut (default `CmdOrCtrl+Shift+Space`) · connect modes (smart / explicit remote, container or self-hosted web UI — http/https only, reachability-checked) — the switches live in the official Web UI's "Desktop" settings section (injected via the `settings.section` slot)
 
 The desktop pieces are injected through the official **DSH plugin mechanism** (`dsh-app-bridge`, the `oh-dsh` route): the app owns a dedicated `dsh-app` profile that loads the bridge bundle — your own `web` profile is never touched.
 
@@ -183,13 +185,17 @@ $env:DSH_APP_MOCK = "missing-cli"; .\src-tauri\target\release\dsh-app.exe
 dsh-app/
 ├─ src/                 # React + TS frontend (light splash / connection status)
 │  ├─ App.tsx           # detection-driven connect flow
-│  ├─ TitleBar.tsx      # splash-phase fused title bar (min/max/close + drag)
+│  ├─ WindowControls.tsx # splash-phase fused title bar (native macOS strip / Linux circles / Windows caption buttons + drag)
 │  └─ i18n.ts           # system-language UI (zh/en) + error-code l10n
 ├─ dsh-app-bridge/      # cordis plugin injected into the official Web UI
 │  ├─ src/server.ts     #   /dsh-app/status marker endpoint (bridge detection)
+│  │                    #   + first-run model presets: pre-writes mainstream
+│  │                    #   channels into the official llm-pi-ai model config
+│  │                    #   (virgin config only; no separate UI)
 │  ├─ src/client/index.tsx
-│  │                    #   fused title bar + connection dot + theme sync,
-│  │                    #   "DSH App" settings page (about + GitHub update check)
+│  │                    #   fused title bar (per-platform buttons + status dot)
+│  │                    #   + theme sync, "DSH App" settings page
+│  │                    #   (app + dsh CLI update management)
 │  ├─ scripts/build.mjs #   client bundle (factory-wrapped) + server bundle
 │  └─ cordis.patch.yml  #   bundle layer (insert row for the loader)
 ├─ src-tauri/
@@ -209,8 +215,8 @@ dsh-app/
 ## Roadmap
 
 - **P0 (done)** — minimal usable shell: smart connect, single instance, tray, tree-kill, CLI detection wizard, i18n
-- **P2 (done, core)** — desktop fusion via the DSH plugin mechanism (`dsh-app-bridge`): fused title bar with connection status, "DSH App" settings page (about + GitHub Releases update management), app-owned `dsh-app` profile
-- **P1** — desktop notifications, autostart, global shortcut, connect modes (design + code skeletons in `docs/P1-design.md`, wiring checklist in `docs/P1-integration-checklist.md`)
+- **P2 (done, core)** — desktop fusion via the DSH plugin mechanism (`dsh-app-bridge`): fused title bar with connection status, "DSH App" settings page (app update management + dsh CLI update management), **model presets fused into the official model configuration (first-run server-side pre-write of mainstream channels into `llm-pi-ai`, no separate UI)**, app-owned `dsh-app` profile
+- **P1 (done)** — Desktop enhancement layer: notifications (`tauri-plugin-notification`), autostart (`tauri-plugin-autostart` + `--hidden`), global shortcut (`tauri-plugin-global-shortcut`), connect modes (smart/explicit; `connect.rs` stores settings in `~/.dsh-app/settings.json`); the settings UI is injected into the official settings page ("Desktop" section). Design & integration record: `docs/P1-design.md` / `docs/P1-integration-checklist.md`
 - **P2 (next)** — more workbench surfaces via the plugin route: PTY terminal, Git Review, plugin marketplace
 
 ---

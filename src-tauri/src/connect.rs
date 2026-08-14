@@ -1,15 +1,11 @@
 // P1: 连接模式 — 智能模式 / 显式连接。
 //
-// 注意：这是参考实现，当前未接入 lib.rs（等 P0 构建完成后合入）。
-// 与 lib.rs 的 connect_and_navigate 合并后替换为单一入口。
+// 已接入 lib.rs（connect_and_navigate / save_settings 使用本模块的类型与工具）。
 
 use serde::{Deserialize, Serialize};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
-
-/// 默认探测目标: 官方 `dsh web` 的监听地址。
-pub const DEFAULT_URL: &str = "http://127.0.0.1:3080";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "url", rename_all = "snake_case")]
@@ -31,8 +27,28 @@ pub struct AppSettings {
     pub connect: ConnectTarget,
     pub autostart: bool,
     pub notifications_enabled: bool,
+    /// 仅窗口未聚焦时弹通知（聚焦时不打扰）。
+    #[serde(default = "default_true")]
+    pub notify_only_unfocused: bool,
+    /// 需要确认（用户问题 / 权限请求）。
+    #[serde(default = "default_true")]
+    pub notify_confirm: bool,
+    /// 任务完成（回合结束）。
+    #[serde(default = "default_false")]
+    pub notify_turn_complete: bool,
+    /// 出错报警（流错误 / agent 错误 / 服务退出）。
+    #[serde(default = "default_true")]
+    pub notify_errors: bool,
     /// 全局快捷键，默认 CmdOrCtrl+Shift+Space
     pub shortcut: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_false() -> bool {
+    false
 }
 
 impl Default for AppSettings {
@@ -41,6 +57,10 @@ impl Default for AppSettings {
             connect: ConnectTarget::Smart,
             autostart: false,
             notifications_enabled: true,
+            notify_only_unfocused: true,
+            notify_confirm: true,
+            notify_turn_complete: false,
+            notify_errors: true,
             shortcut: "CmdOrCtrl+Shift+Space".to_string(),
         }
     }
@@ -101,31 +121,6 @@ pub fn probe_url(url: &str) -> bool {
     match hostport.parse::<std::net::SocketAddr>() {
         Ok(addr) => TcpStream::connect_timeout(&addr, Duration::from_millis(1200)).is_ok(),
         Err(_) => false,
-    }
-}
-
-/// 由 ConnectTarget 决定最终要导航的 URL。
-/// Smart: 探测 3080 → 复用；否则由调用方自启并传入实际端口。
-/// Explicit: 校验并原样返回。
-pub fn resolve_target(target: &ConnectTarget, spawned_port: Option<u16>) -> Result<String, String> {
-    match target {
-        ConnectTarget::Smart => {
-            if probe_url(DEFAULT_URL) {
-                Ok(DEFAULT_URL.to_string())
-            } else if let Some(port) = spawned_port {
-                Ok(format!("http://127.0.0.1:{port}"))
-            } else {
-                Err("没有可用的 dsh web 实例".to_string())
-            }
-        }
-        ConnectTarget::Explicit(raw) => {
-            let url = sanitize_url(raw).ok_or_else(|| "无效的 URL：仅支持 http:// 或 https://".to_string())?;
-            if probe_url(&url) {
-                Ok(url)
-            } else {
-                Err(format!("无法连接到 {url}"))
-            }
-        }
     }
 }
 

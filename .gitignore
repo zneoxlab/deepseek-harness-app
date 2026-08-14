@@ -5,6 +5,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# Locally downloaded installers (CI/release artifacts live on GitHub Releases)
+dist-installers/
+
 # Local Rust toolchain leftovers (from sandbox-era bootstrap)
 .rustup/
 .cargo/

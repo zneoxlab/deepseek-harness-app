@@ -54,15 +54,17 @@
 |------|----------|
 | **智能连接** | 自动检测 dsh CLI（DSH_BIN → npm 全局 → PATH）；`127.0.0.1:3080` 上已有**带桌面桥**的实例则复用，否则自启 `dsh --profile dsh-app --port 0` 随机端口（你手动起的普通 `dsh web` 不受影响） |
 | **dsh CLI 检测** | 缺少 CLI 时显示安装向导 —— 复制安装命令，一键重新检测 |
-| **融合标题栏** | 无边框窗口（`decorations: false`）；最小化 / 最大化 / 关闭、拖拽区和实时**已连接 / 未连接**状态点都在 WebUI 内。颜色跟随官方主题（深色 / 浅色 / 跟随系统） |
-| **DSH App 设置页** | 注册进官方设置面板的页面：关于信息（应用版本、dsh CLI 版本/来源、服务地址、开源地址）+ 基于 **GitHub Releases 的更新管理** |
+| **融合标题栏** | 无边框窗口 + 与系统边框融合的标题栏，按平台使用不同按钮形状：**macOS** 完全使用原生标题栏（真正的系统红绿灯、原生圆角与阴影）；**Windows** 右上角方形按钮（Win11 caption 风格）；**Linux** 左上角圆形按钮（GNOME 风格）。Windows 11 下整窗自动圆角（无边框 + 阴影）。整条标题栏是拖拽区，双击最大化。标题栏颜色全平台跟随**应用内主题**（深色 / 浅色 / 跟随系统） |
+| **侧栏底部状态行** | 侧栏最底部、**设置按钮下面**：左侧状态胶囊（**彩色圆点 + 已连接 / 未连接**），同行靠右显示应用版本号（通过官方 `sidebar.footer.action` 槽注册，设置行上移一格让状态行沉底） |
+| **DSH App 设置页** | 注册进官方设置面板的页面：应用信息（版本、开源地址）+ **GitHub Releases 更新管理**；dsh CLI 信息（版本 / 来源 / 服务地址）+ **CLI 更新管理**（对比 npm registry 最新版、一键更新、复制更新命令） |
+| **模型预配置** | 融合进**原始模型配置**，不新增独立界面：首次启动时由桥插件服务端把主流渠道（DeepSeek / OpenAI / Anthropic / Google Gemini / OpenRouter / xAI / Moonshot / MiniMax / 智谱 GLM / Mistral / Groq / Together）预写入官方 `llm-pi-ai` 命名空间 —— 它们在「设置 → 模型」中直接就是已配置的渠道，内置模型目录自动启用，只差在那里填 API Key；一旦配过任何渠道就不再执行，删除的渠道不会复活 |
 | **系统托盘** | 关窗隐藏到托盘；左键单击唤出窗口；Quit 时整树清理 dsh 进程（不留孤儿） |
 | **单实例** | 重复启动只聚焦已有窗口，不再起新服务 |
 | **Windows 就绪** | `DSH_PERMISSION_MODE` 未设置时自动回退 `danger-full-access`（Windows 无 confinement 后端） |
 | **多语言** | UI 跟随系统语言（简体中文 / English），包括 DSH App 设置页 |
 | **原生图标** | 官方 dsh 鲸鱼图标，全平台统一 |
 
-**规划中（P1）：** 桌面通知 · 开机自启 · 全局快捷键 · 连接模式（远程/容器 Web UI）
+**桌面增强（P1）：** 桌面通知 · 开机自启（`--hidden` 静默驻留托盘）· 全局快捷键（默认 `CmdOrCtrl+Shift+Space` 呼出/隐藏）· 连接模式（智能 / 显式连接远程、容器、自建实例，仅 http/https 且校验可达）—— 设置页位于官方 Web UI 的「桌面设置」（`settings.section` 槽注入）
 
 桌面增强全部通过官方 **DSH 插件机制**（`dsh-app-bridge`，oh-dsh 路线）注入：应用独占一个 `dsh-app` profile 加载桥插件 —— 你自己的 `web` profile 完全不被改动。
 
@@ -183,13 +185,15 @@ $env:DSH_APP_MOCK = "missing-cli"; .\src-tauri\target\release\dsh-app.exe
 dsh-app/
 ├─ src/                 # React + TS 前端（浅色 splash / 连接状态）
 │  ├─ App.tsx           # 检测驱动的连接流程
-│  ├─ TitleBar.tsx      # splash 阶段融合标题栏（最小化/最大化/关闭 + 拖拽）
+│  ├─ WindowControls.tsx # splash 阶段融合标题栏（macOS 原生拖拽带 / Linux 圆形按钮 / Windows 右上角按钮）
 │  └─ i18n.ts           # 系统语言 UI（中/英）+ 错误码本地化
 ├─ dsh-app-bridge/      # 注入官方 Web UI 的 cordis 插件
 │  ├─ src/server.ts     #   /dsh-app/status 标记端点（桌面桥探测）
+│  │                    #   + 首次启动模型预配置：把主流渠道预写入官方
+│  │                    #     llm-pi-ai 模型配置（仅全新配置时，无独立界面）
 │  ├─ src/client/index.tsx
-│  │                    #   融合标题栏 + 连接状态点 + 主题同步，
-│  │                    #   "DSH App" 设置页（关于 + GitHub 更新检查）
+│  │                    #   融合标题栏（分平台按钮 + 连接状态）+ 主题同步，
+│  │                    #   "DSH App" 设置页（应用更新 + CLI 更新管理）
 │  ├─ scripts/build.mjs #   client bundle（factory 包装）+ server bundle
 │  └─ cordis.patch.yml  #   bundle 层（loader insert 行）
 ├─ src-tauri/
@@ -209,8 +213,8 @@ dsh-app/
 ## 路线图
 
 - **P0（已完成）** — 最小可用壳：智能连接、单实例、托盘、整树清理、CLI 检测向导、多语言
-- **P2（核心已完成）** — 通过 DSH 插件机制（`dsh-app-bridge`）实现桌面融合：融合标题栏（含连接状态）、"DSH App" 设置页（关于 + GitHub Releases 更新管理）、应用独占 `dsh-app` profile
-- **P1** — 桌面通知、开机自启、全局快捷键、连接模式（设计与代码骨架在 `docs/P1-design.md`，合入清单在 `docs/P1-integration-checklist.md`）
+- **P2（核心已完成）** — 通过 DSH 插件机制（`dsh-app-bridge`）实现桌面融合：融合标题栏（含连接状态）、"DSH App" 设置页（应用更新管理 + dsh CLI 更新管理）、**模型预配置融合进官方模型配置（首次启动服务端预写主流渠道到 `llm-pi-ai`，无独立界面）**、应用独占 `dsh-app` profile
+- **P1（已完成）** — 桌面增强层：桌面通知（`tauri-plugin-notification`）、开机自启（`tauri-plugin-autostart` + `--hidden`）、全局快捷键（`tauri-plugin-global-shortcut`）、连接模式（智能/显式，`connect.rs` 设置存储于 `~/.dsh-app/settings.json`）；设置 UI 注入官方设置页「桌面设置」。设计与合入记录见 `docs/P1-design.md` / `docs/P1-integration-checklist.md`
 - **P2（后续）** — 插件路线上的更多工作台：PTY 终端、Git Review、插件市场
 
 ---

@@ -15,6 +15,18 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
 tauri-plugin-single-instance = "2"
+# P1 桌面增强层（见 docs/P1-design.md）:
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-global-shortcut = "2"
+# macOS 通知卡片 action 按钮: UNUserNotificationCenter 后端
+# （preview-macos-un 与 tauri-plugin-notification 共享同一 notify-rust, 特性合并）。
+notify-rust = { version = "4", features = ["preview-macos-un"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# macOS 原生窗口边框同步（apply_native_frame）。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSWindow"] }
