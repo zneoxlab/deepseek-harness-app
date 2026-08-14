@@ -658,9 +658,14 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Res
         .resource_dir()
         .ok()
         .and_then(|r| {
-            [r.join("dsh-app-bridge"), r.join("_up_").join("dsh-app-bridge")]
-                .into_iter()
-                .find(|p| p.is_dir())
+            let mut candidates = vec![r.join("dsh-app-bridge"), r.join("_up_").join("dsh-app-bridge")];
+            // Windows NSIS 安装态资源与 exe 同目录, 加一层保险
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    candidates.push(dir.join("dsh-app-bridge"));
+                }
+            }
+            candidates.into_iter().find(|p| p.is_dir())
         })
     {
         Some(b) => b,
@@ -1173,13 +1178,13 @@ enum NpmInvocation {
 }
 
 fn install_dsh_impl(app: &tauri::AppHandle, lang: Option<String>) {
-    let system_npm = which_on_path("npm");
+    // 托管 node 优先: 用它装进 ~/.dsh-app/npm-global, 自包含、不碰系统环境。
+    // （之前的顺序会把托管 npm.cmd 误判成"系统 npm", 装进 %APPDATA%\npm。）
     let managed_node = home_dir()
         .map(|h| h.join(MANAGED_NODE_DIR))
         .filter(|d| d.exists());
-    let npm = if let Some(s) = &system_npm {
-        Some(NpmInvocation::System(s.clone()))
-    } else if let Some(nd) = &managed_node {
+    let system_npm = which_on_path("npm");
+    let npm = if let Some(nd) = &managed_node {
         let node_bin = if cfg!(windows) {
             nd.join("node.exe")
         } else {
@@ -1194,6 +1199,8 @@ fn install_dsh_impl(app: &tauri::AppHandle, lang: Option<String>) {
             node: node_bin,
             cli,
         })
+    } else if let Some(s) = &system_npm {
+        Some(NpmInvocation::System(s.clone()))
     } else {
         None
     };
