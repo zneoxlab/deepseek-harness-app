@@ -1429,10 +1429,11 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
         .spawn()
         .map_err(|e| ConnectError::Spawn(e.to_string()))?;
 
-    // 持续排空 stderr: 防止子进程写满管道缓冲被阻塞, 并保留尾部用于诊断。
-    let stderr_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // 持续排空 stderr/stdout: 防止子进程写满管道缓冲被阻塞,
+    // 并保留输出尾部用于诊断（失败时随错误一起显示）。
+    let diag_tail: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     if let Some(stderr) = child.stderr.take() {
-        let tail = Arc::clone(&stderr_tail);
+        let tail = Arc::clone(&diag_tail);
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
@@ -1444,14 +1445,14 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
                 t.push_str(&l.chars().take(300).collect::<String>());
                 t.push('\n');
                 let lines: Vec<&str> = t.lines().collect();
-                if lines.len() > 8 {
-                    *t = format!("{}\n", lines[lines.len() - 8..].join("\n"));
+                if lines.len() > 12 {
+                    *t = format!("{}\n", lines[lines.len() - 12..].join("\n"));
                 }
             }
         });
     }
 
-    // 读取就绪行: stdout 是 piped, 在这里阻塞读几行直到匹配。
+    // 读取就绪行: stdout 是 piped, 在这里阻塞读几行直到匹配; 行内容同步进诊断缓冲。
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
@@ -1462,6 +1463,15 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
                 Ok(0) => break, // EOF: 子进程已退出
                 Ok(_) => {
                     let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        let mut t = diag_tail.lock().unwrap();
+                        t.push_str(&trimmed.chars().take(300).collect::<String>());
+                        t.push('\n');
+                        let lines: Vec<&str> = t.lines().collect();
+                        if lines.len() > 12 {
+                            *t = format!("{}\n", lines[lines.len() - 12..].join("\n"));
+                        }
+                    }
                     if let Some(idx) = trimmed.find(READY_MARKER) {
                         let url_part = trimmed[idx + READY_MARKER.len()..].trim();
                         if let Some(port) = parse_port_from_url(url_part) {
@@ -1473,12 +1483,12 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
             }
         }
     }
-    // 失败: 尽量把子进程退出状态 + stderr 尾部带出去, 不再盲超时。
+    // 失败: 尽量把子进程退出状态 + stdout/stderr 尾部带出去, 不再盲超时。
     let exit = child.try_wait().ok().flatten();
-    let stderr_msg = stderr_tail.lock().unwrap().trim().to_string();
+    let diag = diag_tail.lock().unwrap().trim().to_string();
     let _ = child.kill();
-    let detail = if !stderr_msg.is_empty() {
-        format!("dsh web 输出: {stderr_msg}")
+    let detail = if !diag.is_empty() {
+        format!("dsh web 输出: {diag}")
     } else if let Some(st) = exit {
         format!("dsh web 未就绪即退出: {st}")
     } else {
