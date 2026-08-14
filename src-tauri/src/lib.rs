@@ -658,11 +658,16 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Res
         .resource_dir()
         .ok()
         .and_then(|r| {
-            let mut candidates = vec![r.join("dsh-app-bridge"), r.join("_up_").join("dsh-app-bridge")];
-            // Windows NSIS 安装态资源与 exe 同目录, 加一层保险
+            let mut candidates = vec![
+                r.join("dsh-app-bridge"),
+                r.join("_up_").join("dsh-app-bridge"),
+                r.join("resources").join("dsh-app-bridge"),
+            ];
+            // Windows NSIS 安装态资源与 exe 同目录, 再加保险
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(dir) = exe.parent() {
                     candidates.push(dir.join("dsh-app-bridge"));
+                    candidates.push(dir.join("resources").join("dsh-app-bridge"));
                 }
             }
             candidates.into_iter().find(|p| p.is_dir())
@@ -735,9 +740,12 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Res
             let mut mklink = std::process::Command::new("cmd");
             mklink.arg("/C").arg(&cmdline);
             no_console(&mut mklink);
-            let st = mklink.status().map_err(|e| format!("mklink: {e}"))?;
-            if !st.success() {
-                return Err(format!("mklink junction failed (exit {st}): {cmdline}"));
+            let ok = mklink.status().map(|s| s.success()).unwrap_or(false);
+            if !ok {
+                // junction 不可用（文件系统/策略限制）→ 回退为目录复制
+                eprintln!("[dsh-app] junction failed ({cmdline}), falling back to copy");
+                copy_dir_recursive(&bridge_abs, &link)
+                    .map_err(|e| format!("bridge copy: {e}"))?;
             }
         }
         #[cfg(not(windows))]
@@ -747,6 +755,23 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Res
     }
 
     eprintln!("[dsh-app] initialized profile {DSH_APP_PROFILE} at {}", profile_dir.display());
+    Ok(())
+}
+
+/// 递归复制目录（Windows junction 不可用时的回退方案）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
     Ok(())
 }
 
