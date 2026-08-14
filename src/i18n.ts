@@ -53,6 +53,10 @@ const ERROR_MESSAGES: Record<string, { zh: string; en: string }> = {
     zh: "（模拟模式 DSH_APP_MOCK=missing-cli）已强制模拟未安装 dsh CLI。",
     en: "(Mock mode DSH_APP_MOCK=missing-cli) Missing CLI simulated on purpose.",
   },
+  NODE_TOO_OLD: {
+    zh: "Node 版本过低：dsh 需要 node:zlib 的 zstd 支持（Node ≥ v22.15.0）。请在引导页点击「升级 Node」。",
+    en: "Node is too old: dsh needs node:zlib zstd support (Node ≥ v22.15.0). Click “Upgrade Node” on the setup page.",
+  },
 };
 
 /** 解析 `[CODE] message` 格式，返回错误码；无法解析返回 null。 */

@@ -136,6 +136,9 @@ struct DshDetectResult {
     version: Option<String>,
     /// 给用户看的安装指引。
     install_hint: &'static str,
+    /// 托管 Node 版本低于要求（dsh 需要 node:zlib zstd ≥ v22.15.0）——
+    /// 即使 dsh 已装, 也必须先进向导升级 Node 才能连接。
+    node_too_old: bool,
 }
 
 impl DshDetectResult {
@@ -146,6 +149,9 @@ impl DshDetectResult {
             entry: None,
             version: None,
             install_hint: hint,
+            node_too_old: managed_node_version()
+                .map(|v| version_less_than(&v, NODE_VERSION))
+                .unwrap_or(false),
         }
     }
 }
@@ -813,6 +819,9 @@ fn dsh_detect() -> DshDetectResult {
             entry: Some(entry.display().to_string()),
             version: probe_dsh_version(&entry),
             install_hint: "",
+            node_too_old: managed_node_version()
+                .map(|v| version_less_than(&v, NODE_VERSION))
+                .unwrap_or(false),
         },
         None => DshDetectResult::missing(
             "[DSH_NOT_FOUND] dsh CLI not found. Install it with `npm install -g @deepseek-ai/dsh` \
@@ -1465,6 +1474,16 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
     }
 
     // 托管环境优先: 绝对路径 node + bin.js, 不依赖 PATH/shim。
+    // 但托管 Node 过旧时 dsh 必崩 (node:zlib zstd 缺失) —— 快速失败给出明确指引。
+    if managed_node_version()
+        .map(|v| version_less_than(&v, NODE_VERSION))
+        .unwrap_or(false)
+    {
+        return Err(ConnectError::Spawn(format!(
+            "[NODE_TOO_OLD] managed Node ({}) is too old: dsh needs node:zlib zstd support (Node >= v22.15.0). Upgrade Node in the setup wizard.",
+            managed_node_version().unwrap_or_default()
+        )));
+    }
     let mut cmd = if let Some((node_bin, js)) = managed_dsh_entry() {
         let mut c = Command::new(&node_bin);
         c.arg(&js);

@@ -10,6 +10,7 @@ type DshDetect = {
   entry: string | null;
   version: string | null;
   installHint: string;
+  nodeTooOld: boolean;
 };
 
 type ToolStatus = {
@@ -245,8 +246,8 @@ export default function App() {
     setState({ phase: "checking" });
     try {
       const result = await invoke<DshDetect>("dsh_detect");
-      if (result.available) {
-        // CLI 可用 → 触发 Rust 侧连接（复用 3080 或自启 dsh web）
+      if (result.available && !result.nodeTooOld) {
+        // CLI 可用且托管 Node 版本达标 → 触发 Rust 侧连接（复用 3080 或自启 dsh web）
         try {
           await invoke("dsh_connect");
           setState({ phase: "starting" });
@@ -254,6 +255,7 @@ export default function App() {
           setState({ phase: "error", message: localizeError(String(e)) });
         }
       } else {
+        // dsh 缺失, 或托管 Node 过旧（dsh 已装但必须升级 Node 才能连）→ 引导页
         setState({ phase: "missing", detect: result });
       }
     } catch (e) {
@@ -400,10 +402,15 @@ export default function App() {
           <p style={styles.title}>{t("配置运行环境", "Set up your environment")}</p>
           <div style={styles.installCard}>
             <p style={styles.installText}>
-              {t(
-                "检测到缺少运行环境。按步骤一键安装即可，完成后会自动连接。",
-                "Some required components are missing. Install them with one click — we'll connect automatically when done.",
-              )}
+              {state.detect.available && state.detect.nodeTooOld
+                ? t(
+                    "检测到 Node 版本过低（dsh 需要 ≥ v22.15.0）。点下方「升级 Node」即可，完成后会自动连接。",
+                    "Your Node version is too old (dsh needs ≥ v22.15.0). Click “Upgrade Node” below and we'll connect automatically.",
+                  )
+                : t(
+                    "检测到缺少运行环境。按步骤一键安装即可，完成后会自动连接。",
+                    "Some required components are missing. Install them with one click — we'll connect automatically when done.",
+                  )}
             </p>
 
             {env?.useMirror && (
