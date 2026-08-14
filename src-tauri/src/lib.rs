@@ -1363,9 +1363,12 @@ fn register_managed_path() -> Result<(), String> {
 fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
     let (dsh, source) = resolve_dsh().ok_or(ConnectError::DshNotFound)?;
 
-    // 确保独立 profile 就绪（幂等，失败仅告警——用户可手动处理）
+    // 确保独立 profile 就绪（幂等，失败仅告警——用户可手动处理）；
+    // 把失败原因拼进最终错误详情, 让连接失败不再无信息。
+    let mut context: Vec<String> = Vec::new();
     if let Err(e) = ensure_dsh_app_profile(&dsh, app) {
         eprintln!("[dsh-app] warning: profile ensure failed: {e}");
+        context.push(format!("profile ensure failed: {e}"));
     }
 
     // Windows 上 npm 全局 bin.js 不能直接 spawn，需 `node <bin.js>`；
@@ -1449,7 +1452,12 @@ fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
     } else {
         "dsh web 未在 30 秒内输出就绪行".to_string()
     };
-    Err(ConnectError::Timeout(detail))
+    let full = if context.is_empty() {
+        detail
+    } else {
+        format!("{}; {}", context.join("; "), detail)
+    };
+    Err(ConnectError::Timeout(full))
 }
 
 fn parse_port_from_url(url_part: &str) -> Option<u16> {
