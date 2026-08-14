@@ -35,6 +35,90 @@ fn no_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn no_console(_cmd: &mut Command) {}
 
+// ---------------------------------------------------------------------------
+// macOS PATH 修复
+//
+// 从 Finder/Dock 双击启动的 .app 是 GUI 进程, launchd 只给它一个极简 PATH
+// (/usr/bin:/bin:/usr/sbin:/sbin)。用户终端里经 Homebrew/nvm/volta 装的
+// dsh、npm、node 都不在这个 PATH 上, 导致 resolve_dsh() 的三条探测路径
+// (npm root -g / which dsh) 全部失败 —— 即使 CLI 已正确安装也检测不到。
+//
+// 方案: 启动时用登录 shell (zsh → bash → sh) 取一次完整 PATH 合并进本进程
+// 环境, 之后所有子进程 (npm、node、dsh) 都继承它; 再叠加 known_dsh_bin()
+// 常见目录兜底, 双保险。
+// ---------------------------------------------------------------------------
+
+/// 用登录 shell 恢复完整 PATH 并合并进当前进程（仅 macOS; 幂等）。
+#[cfg(target_os = "macos")]
+fn merge_login_shell_path() {
+    let Some(login_path) = login_shell_path() else {
+        return;
+    };
+    let mut dirs: Vec<std::path::PathBuf> = std::env::split_paths(&login_path).collect();
+    // 保留当前 PATH 里登录 shell 没给到的条目, 防止意外丢目录
+    if let Some(current) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&current) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    if let Ok(merged) = std::env::join_paths(dirs) {
+        std::env::set_var("PATH", merged);
+    }
+}
+
+/// 依次尝试 zsh → bash → sh 登录 shell, 返回第一个成功输出的 PATH。
+#[cfg(target_os = "macos")]
+fn login_shell_path() -> Option<String> {
+    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if let Some(p) = login_shell_path_once(shell) {
+            let p = p.trim();
+            if !p.is_empty() {
+                return Some(p.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 跑一次 `shell -l -c 'echo $PATH'`, 最多等 3 秒
+/// (防 .zshrc 里的交互命令把启动卡死; 超时杀进程换下一个 shell)。
+#[cfg(target_os = "macos")]
+fn login_shell_path_once(shell: &str) -> Option<String> {
+    use std::io::Read as _;
+
+    let mut child = Command::new(shell)
+        .args(["-l", "-c", "echo \"$PATH\""])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stdout.read_to_string(&mut s);
+        s
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let finished = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break true,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break false;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => break false,
+        }
+    };
+    let out = reader.join().unwrap_or_default();
+    if finished { Some(out) } else { None }
+}
+
 /// 持有拉起的 `dsh web` 子进程与它的 URL, 退出时整树清理。
 struct ServerState(Mutex<Option<(Child, String)>>);
 
@@ -44,7 +128,7 @@ struct ServerState(Mutex<Option<(Child, String)>>);
 struct DshDetectResult {
     /// CLI 是否可用（能被解析并执行）。
     available: bool,
-    /// 定位来源: "dsh_bin" | "npm_global" | "path" | null
+    /// 定位来源: "dsh_bin" | "npm_global" | "path" | "known_dir" | null
     source: Option<&'static str>,
     /// 解析到的入口（可执行文件或 bin.js 路径）。
     entry: Option<String>,
@@ -74,7 +158,7 @@ struct AppInfo {
     app_version: &'static str,
     /// 本地 dsh CLI 版本（`dsh --version` 输出）。
     dsh_version: Option<String>,
-    /// dsh CLI 来源: "dsh_bin" | "npm_global" | "path" | null
+    /// dsh CLI 来源: "dsh_bin" | "npm_global" | "path" | "known_dir" | null
     dsh_source: Option<&'static str>,
     /// 当前连接的 dsh web 服务地址。
     service_url: Option<String>,
@@ -105,6 +189,11 @@ impl ConnectError {
 }
 
 pub fn run() {
+    // macOS: Finder/Dock 启动的 GUI 进程 PATH 极简, 先合并登录 shell 的完整
+    // PATH, 否则 dsh/npm 即使已安装也检测不到。
+    #[cfg(target_os = "macos")]
+    merge_login_shell_path();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 第二次启动: 聚焦已有窗口而不是再起一个服务
@@ -271,7 +360,7 @@ fn connect_and_navigate(app: &tauri::AppHandle) -> Result<(), ConnectError> {
         DEFAULT_URL.to_string()
     } else {
         let _ = app.emit("dsh://phase", "starting:");
-        let (child, port) = spawn_dsh_web()?;
+        let (child, port) = spawn_dsh_web(app)?;
         let url = format!("http://127.0.0.1:{port}");
         if let Some(state) = app.try_state::<ServerState>() {
             *state.0.lock().unwrap() = Some((child, url.clone()));
@@ -332,7 +421,7 @@ fn probe_bridge_ready() -> bool {
     buf.contains("\"ok\":true")
 }
 
-/// 解析 dsh 可执行文件: DSH_BIN 显式路径 > npm 全局包 > PATH 上的 dsh。
+/// 解析 dsh 可执行文件: DSH_BIN 显式路径 > npm 全局包 > PATH 上的 dsh > 常见安装目录。
 /// 返回 (入口, 来源标识)。
 fn resolve_dsh() -> Option<(std::path::PathBuf, &'static str)> {
     // 1) DSH_BIN 显式覆盖
@@ -353,6 +442,10 @@ fn resolve_dsh() -> Option<(std::path::PathBuf, &'static str)> {
         if let Some(p) = which_on_path(name) {
             return Some((p, "path"));
         }
+    }
+    // 4) 常见安装目录兜底（PATH/shell 合并都失效时的最后一层保险）
+    if let Some(p) = known_dsh_bin() {
+        return Some((p, "known_dir"));
     }
     None
 }
@@ -395,6 +488,28 @@ fn npm_global_dsh_entry() -> Option<std::path::PathBuf> {
             }
         }
     }
+    // 回退：Unix/macOS 常见 npm 全局前缀（不依赖 PATH 上的 npm 命令）
+    #[cfg(not(windows))]
+    {
+        let mut prefixes: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(home) = std::env::var("HOME") {
+            prefixes.push(std::path::PathBuf::from(&home).join(".npm-global"));
+        }
+        prefixes.push(std::path::PathBuf::from("/opt/homebrew"));
+        prefixes.push(std::path::PathBuf::from("/usr/local"));
+        for prefix in prefixes {
+            let entry = prefix
+                .join("lib")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh")
+                .join("lib")
+                .join("bin.js");
+            if entry.exists() {
+                return Some(entry);
+            }
+        }
+    }
     None
 }
 
@@ -409,6 +524,35 @@ fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// PATH / shell 合并都失效时的最后一层兜底：探测常见安装位置。
+///   - Homebrew: /opt/homebrew/bin/dsh、/usr/local/bin/dsh
+///   - npm 自定义 prefix: ~/.npm-global/bin/dsh
+///   - volta: ~/.volta/bin/dsh
+///   - nvm: ~/.nvm/versions/node/<最新安装版本>/bin/dsh
+fn known_dsh_bin() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = std::path::Path::new(&home);
+        candidates.push(home.join(".npm-global").join("bin").join("dsh"));
+        candidates.push(home.join(".volta").join("bin").join("dsh"));
+        // nvm 装了多个 node 版本时取最新安装的
+        if let Ok(rd) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
+            let mut versions: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            versions.sort_by_key(|p| {
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH)
+            });
+            if let Some(newest) = versions.pop() {
+                candidates.push(newest.join("bin").join("dsh"));
+            }
+        }
+    }
+    candidates.push(std::path::PathBuf::from("/opt/homebrew/bin/dsh"));
+    candidates.push(std::path::PathBuf::from("/usr/local/bin/dsh"));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 /// dsh-app 独立 profile 名。官方 web profile 保留给用户，我们不碰。
 const DSH_APP_PROFILE: &str = "dsh-app";
 
@@ -418,8 +562,13 @@ const DSH_APP_PROFILE: &str = "dsh-app";
 /// 我们的 profile 只加官方 web-app + bridge 两个 bundle，dsh-web-app 由
 /// 全局 dsh 的模块树提供（Node 向上查找），无需 npm 安装。
 ///
-/// 幂等：已就绪则不动；仅首次创建。失败只告警不阻断（用户可手动修）。
-fn ensure_dsh_app_profile(_dsh: &std::path::Path) -> Result<(), String> {
+/// bridge 插件本体随 app 打包（macOS: .app/Contents/Resources/dsh-app-bridge，
+/// 见 tauri.conf.json `bundle.resources`），profile 里只放几行 package.json
+/// 和指向 app 内部插件的符号链接——用户环境零安装。
+///
+/// 幂等：manifest + 链接都就绪则不动；app 移动/升级导致链接失效时自动重建。
+/// 失败只告警不阻断（用户可手动修）。
+fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Result<(), String> {
     use std::io::Write as _;
 
     let home = std::env::var("DSH_HOME").unwrap_or_else(|_| {
@@ -430,26 +579,53 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path) -> Result<(), String> {
     });
     let profile_dir = std::path::PathBuf::from(&home).join("profiles").join(DSH_APP_PROFILE);
     let manifest_path = profile_dir.join("package.json");
+    let nm = profile_dir.join("node_modules");
+    let link = nm.join("dsh-app-bridge");
 
-    // 已存在且含我们的 bundle → 无需处理
-    if let Ok(text) = std::fs::read_to_string(&manifest_path) {
-        if text.contains("dsh-app-bridge") && text.contains("@deepseek-ai/dsh-web-app") {
-            return Ok(());
+    // 幂等：manifest 含我们的 bundle 且链接有效 → 无需处理。
+    // 链接可能因 app 移动而失效（符号链接指向旧位置），此时继续重建。
+    if link.exists() {
+        if let Ok(text) = std::fs::read_to_string(&manifest_path) {
+            if text.contains("dsh-app-bridge") && text.contains("@deepseek-ai/dsh-web-app") {
+                return Ok(());
+            }
         }
     }
 
     std::fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
 
-    // bridge 包目录：相对本应用 exe（target/release/dsh-app.exe → 上两级 = dsh-app 根）
-    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf()));
-    let bridge_dir = match exe_dir {
-        Some(d) => d.parent().and_then(|p| p.parent()).map(|p| p.join("dsh-app-bridge")),
-        None => None,
+    // bridge 包目录：优先取随 app 打包的 resource（打包态
+    // .app/Contents/Resources/dsh-app-bridge；开发态回退到 exe 上溯两级
+    // target/debug|release → 项目根）。
+    // resources 的两种写法落点不同（map 形式在资源根，数组 + `..` 形式在
+    // `_up_/` 下），两个位置都探测。
+    let bridge_abs = match app
+        .path()
+        .resource_dir()
+        .ok()
+        .and_then(|r| {
+            [r.join("dsh-app-bridge"), r.join("_up_").join("dsh-app-bridge")]
+                .into_iter()
+                .find(|p| p.is_dir())
+        })
+    {
+        Some(b) => b,
+        None => {
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+            exe_dir
+                .as_ref()
+                .and_then(|d| d.parent().and_then(|p| p.parent()))
+                .map(|p| p.join("dsh-app-bridge"))
+                .filter(|p| p.is_dir())
+                .ok_or_else(|| {
+                    "cannot locate dsh-app-bridge (resource dir or exe path unexpected)".to_string()
+                })?
+        }
     };
-    let bridge_abs = match bridge_dir {
-        Some(b) => b.canonicalize().map_err(|e| format!("bridge dir: {e}"))?,
-        None => return Err("cannot locate dsh-app-bridge (exe path unexpected)".to_string()),
-    };
+    // canonicalize 得到稳定绝对路径（.app 内 resource 可能经过符号链接）
+    let bridge_abs = bridge_abs.canonicalize().map_err(|e| format!("bridge dir: {e}"))?;
 
     let manifest = format!(
         r#"{{
@@ -477,9 +653,15 @@ fn ensure_dsh_app_profile(_dsh: &std::path::Path) -> Result<(), String> {
 
     // profile 的 node_modules 里建 bridge 链接（dsh plugin 用 pnpm；这里直接
     // 用目录链接，Node 解析 link: 依赖时按路径解析）。
-    let nm = profile_dir.join("node_modules");
     std::fs::create_dir_all(&nm).map_err(|e| e.to_string())?;
-    let link = nm.join("dsh-app-bridge");
+    // 旧链接可能指向已移动的 app 位置而失效（exists() 跟随链接返回 false），
+    // 先清掉再重建，避免 symlink EEXIST。
+    if link.symlink_metadata().is_ok() {
+        #[cfg(windows)]
+        let _ = std::fs::remove_dir(&link); // junction 是目录重解析点
+        #[cfg(not(windows))]
+        let _ = std::fs::remove_file(&link);
+    }
     if !link.exists() {
         #[cfg(windows)]
         {
@@ -549,11 +731,11 @@ fn dsh_detect() -> DshDetectResult {
 /// 启动 dsh web（带 dsh-app-bridge 插件）：
 /// 通过独立 profile `dsh-app` 启动，加载官方 web app + 我们的桌面桥插件，
 /// 不污染用户自己的 web profile。
-fn spawn_dsh_web() -> Result<(Child, u16), ConnectError> {
+fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
     let (dsh, source) = resolve_dsh().ok_or(ConnectError::DshNotFound)?;
 
     // 确保独立 profile 就绪（幂等，失败仅告警——用户可手动处理）
-    if let Err(e) = ensure_dsh_app_profile(&dsh) {
+    if let Err(e) = ensure_dsh_app_profile(&dsh, app) {
         eprintln!("[dsh-app] warning: profile ensure failed: {e}");
     }
 
@@ -693,3 +875,4 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
     Ok(())
 }
+
