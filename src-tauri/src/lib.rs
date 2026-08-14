@@ -622,7 +622,7 @@ const DSH_APP_PROFILE: &str = "dsh-app";
 ///
 /// 幂等：manifest + 链接都就绪则不动；app 移动/升级导致链接失效时自动重建。
 /// 失败只告警不阻断（用户可手动修）。
-fn ensure_dsh_app_profile(_dsh: &std::path::Path, app: &tauri::AppHandle) -> Result<(), String> {
+fn ensure_dsh_app_profile(app: &tauri::AppHandle) -> Result<(), String> {
     use std::io::Write as _;
 
     let home = std::env::var("DSH_HOME").unwrap_or_else(|_| {
@@ -1389,29 +1389,61 @@ fn register_managed_path() -> Result<(), String> {
 }
 
 
+/// 托管环境的绝对路径启动组合 (node 可执行 + dsh bin.js)，
+/// 完全不用 PATH/shim——Windows 上最稳的启动方式。
+fn managed_dsh_entry() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let home = home_dir()?;
+    let node_dir = home.join(MANAGED_NODE_DIR);
+    let node_bin = if cfg!(windows) {
+        node_dir.join("node.exe")
+    } else {
+        node_dir.join("bin").join("node")
+    };
+    let js = home
+        .join(MANAGED_GLOBAL_DIR)
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("lib")
+        .join("bin.js");
+    if node_bin.is_file() && js.is_file() {
+        Some((node_bin, js))
+    } else {
+        None
+    }
+}
+
 /// 启动 dsh web（带 dsh-app-bridge 插件）：
 /// 通过独立 profile `dsh-app` 启动，加载官方 web app + 我们的桌面桥插件，
 /// 不污染用户自己的 web profile。
 fn spawn_dsh_web(app: &tauri::AppHandle) -> Result<(Child, u16), ConnectError> {
-    let (dsh, source) = resolve_dsh().ok_or(ConnectError::DshNotFound)?;
+    let mut context: Vec<String> = Vec::new();
 
     // 确保独立 profile 就绪（幂等，失败仅告警——用户可手动处理）；
     // 把失败原因拼进最终错误详情, 让连接失败不再无信息。
-    let mut context: Vec<String> = Vec::new();
-    if let Err(e) = ensure_dsh_app_profile(&dsh, app) {
+    if let Err(e) = ensure_dsh_app_profile(app) {
         eprintln!("[dsh-app] warning: profile ensure failed: {e}");
         context.push(format!("profile ensure failed: {e}"));
     }
 
-    // Windows 上 npm 全局 bin.js 不能直接 spawn，需 `node <bin.js>`；
-    // .cmd shim 需经 cmd /C（run_bin_cmd 处理）。用 source 区分更可靠。
-    let is_js_entry = source == "npm_global" && dsh.extension().map(|e| e == "js").unwrap_or(false);
-    let mut cmd = if is_js_entry {
-        let mut c = Command::new("node");
-        c.arg(&dsh);
+    // 托管环境优先: 绝对路径 node + bin.js, 不依赖 PATH/shim。
+    let mut cmd = if let Some((node_bin, js)) = managed_dsh_entry() {
+        let mut c = Command::new(&node_bin);
+        c.arg(&js);
         c
     } else {
-        run_bin_cmd(&dsh)
+        let (dsh, source) = resolve_dsh().ok_or(ConnectError::DshNotFound)?;
+        // Windows 上 npm 全局 bin.js 不能直接 spawn，需 `node <bin.js>`；
+        // .cmd shim 需经 cmd /C（run_bin_cmd 处理）。用 source 区分更可靠。
+        let is_js_entry =
+            source == "npm_global" && dsh.extension().map(|e| e == "js").unwrap_or(false);
+        if is_js_entry {
+            let mut c = Command::new("node");
+            c.arg(&dsh);
+            c
+        } else {
+            run_bin_cmd(&dsh)
+        }
     };
     cmd.arg("--profile").arg("dsh-app").arg("--port").arg("0");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
