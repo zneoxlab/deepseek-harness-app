@@ -193,6 +193,8 @@ pub fn run() {
     // PATH, 否则 dsh/npm 即使已安装也检测不到。
     #[cfg(target_os = "macos")]
     merge_login_shell_path();
+    // 托管环境 (一键安装的 node / dsh) 前置进 PATH, 所有平台生效。
+    prepend_managed_env_path();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -207,6 +209,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             dsh_detect,
             dsh_connect,
+            env_detect,
+            install_node,
+            install_dsh,
             app_info,
             window_minimize,
             window_toggle_maximize,
@@ -494,6 +499,7 @@ fn npm_global_dsh_entry() -> Option<std::path::PathBuf> {
         let mut prefixes: Vec<std::path::PathBuf> = Vec::new();
         if let Ok(home) = std::env::var("HOME") {
             prefixes.push(std::path::PathBuf::from(&home).join(".npm-global"));
+            prefixes.push(std::path::PathBuf::from(&home).join(".dsh-app").join("npm-global"));
         }
         prefixes.push(std::path::PathBuf::from("/opt/homebrew"));
         prefixes.push(std::path::PathBuf::from("/usr/local"));
@@ -535,6 +541,8 @@ fn known_dsh_bin() -> Option<std::path::PathBuf> {
         let home = std::path::Path::new(&home);
         candidates.push(home.join(".npm-global").join("bin").join("dsh"));
         candidates.push(home.join(".volta").join("bin").join("dsh"));
+        // 应用内一键安装的托管环境
+        candidates.push(home.join(".dsh-app").join("npm-global").join("bin").join("dsh"));
         // nvm 装了多个 node 版本时取最新安装的
         if let Ok(rd) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
             let mut versions: Vec<std::path::PathBuf> = rd.flatten().map(|e| e.path()).collect();
@@ -727,6 +735,445 @@ fn dsh_detect() -> DshDetectResult {
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// 一键环境安装
+//
+// 目标: 用户下载 App 后零操作, 环境在应用内一键装好。
+//   - 分步检测 node → npm → dsh
+//   - Node 缺失 → 下载官方预编译包到 ~/.dsh-app/node (免管理员, 不改系统),
+//     随后用它的 npm 装 dsh 到 ~/.dsh-app/npm-global
+//   - dsh 缺失 → npm install -g @deepseek-ai/dsh (系统 npm 优先, 否则托管 npm)
+//   - 中文语言 + 中国时区 → 优先 npmmirror 镜像, 失败自动退官方源
+// 进度通过 `dsh://install` 事件 (InstallEvent) 推给前端。
+// ---------------------------------------------------------------------------
+
+const NODE_VERSION: &str = "v22.14.0";
+const NPM_OFFICIAL_REGISTRY: &str = "https://registry.npmjs.org";
+const NPM_MIRROR_REGISTRY: &str = "https://registry.npmmirror.com";
+const NODE_OFFICIAL_BASE: &str = "https://nodejs.org/dist";
+const NODE_MIRROR_BASE: &str = "https://npmmirror.com/mirrors/node";
+const MANAGED_NODE_DIR: &str = ".dsh-app/node";
+const MANAGED_GLOBAL_DIR: &str = ".dsh-app/npm-global";
+
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
+/// 中文语言环境: LANG/LC_ALL/LC_CTYPE 以 zh 开头或含 zh_CN/zh-CN/zh-Hans。
+fn is_chinese_locale() -> bool {
+    for var in ["LANG", "LC_ALL", "LC_CTYPE"] {
+        if let Ok(v) = std::env::var(var) {
+            let v = v.to_lowercase();
+            if v.starts_with("zh")
+                || v.contains("zh_cn")
+                || v.contains("zh-cn")
+                || v.contains("zh_hans")
+                || v.contains("zh-hans")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 中国时区: TZ 变量或 /etc/localtime 指向 Asia/Shanghai 等。
+fn is_china_timezone() -> bool {
+    if let Ok(tz) = std::env::var("TZ") {
+        let tz = tz.to_lowercase();
+        if ["shanghai", "chongqing", "urumqi", "harbin", "beijing"]
+            .iter()
+            .any(|k| tz.contains(k))
+        {
+            return true;
+        }
+    }
+    #[cfg(unix)]
+    if let Ok(p) = std::fs::read_link("/etc/localtime") {
+        if p.to_string_lossy().contains("Asia/Shanghai") {
+            return true;
+        }
+    }
+    false
+}
+
+/// 中文语言判定: 前端传的 navigator.language（GUI 下可靠）优先,
+/// 兜底读 LANG/LC_ALL/LC_CTYPE。
+fn locale_is_chinese(lang: Option<&str>) -> bool {
+    if let Some(l) = lang {
+        if l.to_lowercase().starts_with("zh") {
+            return true;
+        }
+    }
+    is_chinese_locale()
+}
+
+fn use_mirror(lang: Option<&str>) -> bool {
+    locale_is_chinese(lang) && is_china_timezone()
+}
+
+/// 把托管环境目录前置进 PATH: npm-global/bin 在前 (dsh), node/bin 在后。
+/// 所有平台启动时调用; 安装完成后也调用, 使后续子进程立即能找到。
+fn prepend_managed_env_path() {
+    let Some(home) = home_dir() else { return };
+    let mut dirs: Vec<std::path::PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    let managed = if cfg!(windows) {
+        vec![
+            home.join(MANAGED_GLOBAL_DIR),
+            home.join(MANAGED_NODE_DIR),
+        ]
+    } else {
+        vec![
+            home.join(MANAGED_GLOBAL_DIR).join("bin"),
+            home.join(MANAGED_NODE_DIR).join("bin"),
+        ]
+    };
+    for d in managed {
+        if d.is_dir() && !dirs.contains(&d) {
+            dirs.insert(0, d);
+        }
+    }
+    if let Ok(p) = std::env::join_paths(dirs) {
+        std::env::set_var("PATH", p);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolStatus {
+    present: bool,
+    version: Option<String>,
+    path: Option<String>,
+}
+
+impl ToolStatus {
+    fn probe(bin: &str) -> ToolStatus {
+        let path = which_on_path(bin).map(|p| p.display().to_string());
+        let version = probe_bin_version(bin);
+        ToolStatus {
+            present: version.is_some() || path.is_some(),
+            version,
+            path,
+        }
+    }
+}
+
+fn probe_bin_version(bin: &str) -> Option<String> {
+    let mut c = Command::new(bin);
+    c.arg("--version");
+    no_console(&mut c);
+    match c.output() {
+        Ok(o) if o.status.success() => {
+            let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if v.is_empty() { None } else { Some(v.chars().take(60).collect()) }
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvStatus {
+    node: ToolStatus,
+    npm: ToolStatus,
+    dsh: ToolStatus,
+    /// 是否将优先使用国内镜像（中文语言 + 中国时区）。
+    use_mirror: bool,
+    /// 托管 Node 安装目录（未安装时是计划路径）。
+    managed_node: Option<String>,
+    /// 托管 npm 全局目录（dsh 装在这里）。
+    managed_global: Option<String>,
+}
+
+/// 分步环境检测: node / npm / dsh 的状态 + 镜像策略。
+#[tauri::command]
+fn env_detect(lang: Option<String>) -> EnvStatus {
+    let (dsh_entry, dsh_ver) = match resolve_dsh() {
+        Some((e, _)) => (Some(e.display().to_string()), probe_dsh_version(&e)),
+        None => (None, None),
+    };
+    EnvStatus {
+        node: ToolStatus::probe("node"),
+        npm: ToolStatus::probe("npm"),
+        dsh: ToolStatus {
+            present: dsh_entry.is_some(),
+            version: dsh_ver,
+            path: dsh_entry,
+        },
+        use_mirror: use_mirror(lang.as_deref()),
+        managed_node: home_dir().map(|h| h.join(MANAGED_NODE_DIR).display().to_string()),
+        managed_global: home_dir().map(|h| h.join(MANAGED_GLOBAL_DIR).display().to_string()),
+    }
+}
+
+/// 安装进度事件: stage ∈ starting/downloading/extracting/installing/log/done/error
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallEvent {
+    stage: String,
+    message: String,
+    ok: Option<bool>,
+}
+
+fn emit_install(app: &tauri::AppHandle, stage: &str, message: String, ok: Option<bool>) {
+    let _ = app.emit(
+        "dsh://install",
+        InstallEvent {
+            stage: stage.to_string(),
+            message,
+            ok,
+        },
+    );
+}
+
+fn node_platform_triple() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("darwin-arm64"),
+        ("macos", "x86_64") => Some("darwin-x64"),
+        ("windows", "x86_64") => Some("win-x64"),
+        ("windows", "aarch64") => Some("win-arm64"),
+        ("linux", "x86_64") => Some("linux-x64"),
+        ("linux", "aarch64") => Some("linux-arm64"),
+        _ => None,
+    }
+}
+
+/// 一键安装 Node（托管到 ~/.dsh-app/node）。异步执行, 进度走事件。
+#[tauri::command]
+fn install_node(lang: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    let triple = node_platform_triple().ok_or("unsupported platform for managed node install")?;
+    thread::spawn(move || {
+        install_node_impl(&app, triple, lang);
+    });
+    Ok(())
+}
+
+fn install_node_impl(app: &tauri::AppHandle, triple: &str, lang: Option<String>) {
+    let Some(home) = home_dir() else {
+        emit_install(app, "error", "cannot resolve home dir".into(), Some(false));
+        return;
+    };
+    let ext = if cfg!(windows) { ".zip" } else { ".tar.gz" };
+    let file = format!("node-{NODE_VERSION}-{triple}{ext}");
+    let mirror = use_mirror(lang.as_deref());
+    let urls: Vec<String> = if mirror {
+        vec![
+            format!("{NODE_MIRROR_BASE}/{NODE_VERSION}/{file}"),
+            format!("{NODE_OFFICIAL_BASE}/{NODE_VERSION}/{file}"),
+        ]
+    } else {
+        vec![format!("{NODE_OFFICIAL_BASE}/{NODE_VERSION}/{file}")]
+    };
+    let tmp = std::env::temp_dir().join(&file);
+
+    // 下载: 镜像 → 官方 退避
+    let mut downloaded = false;
+    for (i, url) in urls.iter().enumerate() {
+        let label = if mirror && i == 0 { "国内镜像" } else { "官方源" };
+        emit_install(app, "downloading", format!("正在下载 Node {NODE_VERSION}（{label}）"), None);
+        let mut c = Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+        c.args(["-fL", "--retry", "3", "--connect-timeout", "10", "-o"])
+            .arg(&tmp)
+            .arg(url);
+        no_console(&mut c);
+        match c.status() {
+            Ok(s) if s.success() => {
+                downloaded = true;
+                break;
+            }
+            Ok(_) => emit_install(app, "downloading", format!("{label}下载失败，尝试下一个源…"), None),
+            Err(e) => emit_install(app, "downloading", format!("{label}下载失败: {e}，尝试下一个源…"), None),
+        }
+    }
+    if !downloaded {
+        let _ = std::fs::remove_file(&tmp);
+        emit_install(app, "error", format!("Node {NODE_VERSION} 所有源下载失败，请检查网络后重试"), Some(false));
+        return;
+    }
+
+    // 解压到 staging 再原子替换 node_dir
+    emit_install(app, "extracting", "正在解压安装…".into(), None);
+    let node_dir = home.join(MANAGED_NODE_DIR);
+    let staging = home.join(".dsh-app").join(".node-tmp");
+    let _ = std::fs::remove_dir_all(&staging);
+    if std::fs::create_dir_all(&staging).is_err() {
+        emit_install(app, "error", "无法创建安装目录".into(), Some(false));
+        return;
+    }
+    let extract_ok = if cfg!(windows) {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
+                tmp.display(),
+                staging.display()
+            ),
+        ]);
+        no_console(&mut c);
+        c.status().map(|s| s.success()).unwrap_or(false)
+    } else {
+        let mut c = Command::new("tar");
+        c.args([
+            "-xzf",
+            &tmp.display().to_string(),
+            "-C",
+            &staging.display().to_string(),
+            "--strip-components=1",
+        ]);
+        no_console(&mut c);
+        c.status().map(|s| s.success()).unwrap_or(false)
+    };
+    let _ = std::fs::remove_file(&tmp);
+    if !extract_ok {
+        let _ = std::fs::remove_dir_all(&staging);
+        emit_install(app, "error", "解压失败，请重试".into(), Some(false));
+        return;
+    }
+    let _ = std::fs::remove_dir_all(&node_dir);
+    if std::fs::rename(&staging, &node_dir).is_err() {
+        emit_install(app, "error", "安装目录替换失败".into(), Some(false));
+        return;
+    }
+
+    // 验证
+    let node_bin = node_dir.join(if cfg!(windows) { "node.exe" } else { "bin/node" });
+    let ver = Command::new(&node_bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        });
+    match ver {
+        Some(v) => {
+            prepend_managed_env_path();
+            emit_install(app, "done", format!("Node 安装完成: {v}"), Some(true));
+        }
+        None => emit_install(app, "error", "Node 安装完成但验证失败，请手动检查".into(), Some(false)),
+    }
+}
+
+/// 一键安装 dsh CLI: npm install -g @deepseek-ai/dsh（registry 镜像退避）。
+/// 系统 npm 优先; 没有则用托管 node 的 npm 装到托管全局目录。
+#[tauri::command]
+fn install_dsh(lang: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    thread::spawn(move || {
+        install_dsh_impl(&app, lang);
+    });
+    Ok(())
+}
+
+fn install_dsh_impl(app: &tauri::AppHandle, lang: Option<String>) {
+    let system_npm = which_on_path("npm");
+    let managed_npm = home_dir().map(|h| {
+        let node_dir = h.join(MANAGED_NODE_DIR);
+        if cfg!(windows) {
+            node_dir.join("npm.cmd")
+        } else {
+            node_dir.join("bin").join("npm")
+        }
+    });
+    let npm = match (&system_npm, managed_npm.as_ref()) {
+        (Some(s), _) => Some(s.clone()),
+        (None, Some(m)) if m.exists() => Some(m.clone()),
+        _ => None,
+    };
+    let Some(npm) = npm else {
+        emit_install(app, "error", "未找到 npm：请先安装 Node 环境".into(), Some(false));
+        return;
+    };
+    let using_managed = system_npm.is_none();
+
+    let mirror = use_mirror(lang.as_deref());
+    let registries: Vec<&str> = if mirror {
+        vec![NPM_MIRROR_REGISTRY, NPM_OFFICIAL_REGISTRY]
+    } else {
+        vec![NPM_OFFICIAL_REGISTRY]
+    };
+
+    let mut last_err = String::new();
+    for (i, reg) in registries.iter().enumerate() {
+        let label = if mirror && i == 0 { "国内镜像" } else { "官方源" };
+        emit_install(app, "installing", format!("正在安装 dsh CLI（{label} registry）…"), None);
+        let mut c = Command::new(&npm);
+        c.arg("install").arg("-g").arg("--no-audit").arg("--no-fund");
+        if using_managed {
+            if let Some(g) = home_dir() {
+                c.arg("--prefix").arg(g.join(MANAGED_GLOBAL_DIR));
+            }
+        }
+        c.arg("@deepseek-ai/dsh").arg(format!("--registry={reg}"));
+        no_console(&mut c);
+        match run_streaming(&mut c, app) {
+            Ok(()) => {
+                prepend_managed_env_path();
+                emit_install(app, "done", "dsh CLI 安装完成".into(), Some(true));
+                return;
+            }
+            Err(e) => {
+                last_err = e;
+                emit_install(app, "installing", format!("{label}安装失败，尝试下一个源…"), None);
+            }
+        }
+    }
+    emit_install(app, "error", format!("dsh CLI 安装失败：{last_err}"), Some(false));
+}
+
+/// 运行命令并把 stdout/stderr 行流式发成 log 事件; 成功返回 Ok(())。
+fn run_streaming(cmd: &mut Command, app: &tauri::AppHandle) -> Result<(), String> {
+    use std::io::{BufRead, BufReader};
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let a1 = app.clone();
+    let t1 = stdout.map(|s| {
+        thread::spawn(move || {
+            let r = BufReader::new(s);
+            for line in r.lines().map_while(Result::ok) {
+                let l = line.trim();
+                if !l.is_empty() {
+                    emit_install(&a1, "log", l.chars().take(200).collect(), None);
+                }
+            }
+        })
+    });
+    let a2 = app.clone();
+    let t2 = stderr.map(|s| {
+        thread::spawn(move || {
+            let r = BufReader::new(s);
+            for line in r.lines().map_while(Result::ok) {
+                let l = line.trim();
+                if !l.is_empty() {
+                    emit_install(&a2, "log", l.chars().take(200).collect(), None);
+                }
+            }
+        })
+    });
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if let Some(t) = t1 {
+        let _ = t.join();
+    }
+    if let Some(t) = t2 {
+        let _ = t.join();
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("exit code {}", status.code().unwrap_or(-1)))
+    }
+}
+
 
 /// 启动 dsh web（带 dsh-app-bridge 插件）：
 /// 通过独立 profile `dsh-app` 启动，加载官方 web app + 我们的桌面桥插件，
