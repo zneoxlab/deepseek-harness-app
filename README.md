@@ -23,7 +23,7 @@
 ---
 
 > [!NOTE]
-> **DeepSeek Harness App (dsh-app) is not an official DeepSeek product.** It wraps the local [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) CLI into a desktop app: it detects your `dsh` installation, starts a plugin-enabled `dsh web` when needed, and gives the official web UI the desktop experience it deserves — a fused title bar, tray residency, and (planned) notifications, autostart, global shortcuts and connect modes.
+> **DeepSeek Harness App (dsh-app) is not an official DeepSeek product.** It wraps the local [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) CLI into a desktop app: it automatically detects your Node/npm/dsh environment, installs or upgrades missing pieces with one click, starts/reuses a plugin-enabled `dsh web` when the app launches, and gives the official web UI the desktop experience it deserves — a fused title bar, tray residency, notifications, autostart, global shortcuts and connect modes.
 
 ---
 
@@ -33,18 +33,40 @@ The official `dsh` ships a **complete web UI** (sessions, projects, permissions,
 
 That is why **DeepSeek Harness App builds on the official web UI instead of reinventing it**: we add only what a browser cannot — a native shell, tray residency, and desktop integrations.
 
+## Why this is different from fork-based shells
+
+Some desktop clients fork or vendor the DeepSeek Harness source and ship their own “core”. That makes the package heavier, can drift from upstream, and often freezes the core until the shell project updates it. dsh-app does the opposite:
+
+|  | Fork/vendor-based shells | dsh-app |
+|---|---|---|
+| **Core** | Bundle or fork the dsh codebase, often with modified internals | Use the official local `@deepseek-ai/dsh` CLI from npm — no fork, no rewrite |
+| **Update path** | Wait for the shell maintainer to merge upstream changes | Sync official dsh releases from npm/GitHub Releases; one-click check and upgrade |
+| **Independence** | If the shell stops being maintained, the bundled core can be stuck | dsh core is official and can always be upgraded independently of this App |
+| **Footprint** | Often Electron + copied/duplicated web UI | Lightweight Tauri native shell + official web UI; dsh runs from your local installation |
+| **Browser access** | The shell may own/alter the only running server or fork the UI | App starts or reuses the standard local dsh web — the same service stays reachable in your browser |
+
+Practical highlights:
+
+- **Automatic Node / CLI detection** — the startup wizard checks Node, npm, and dsh in order; it finds dsh from `DSH_BIN` → npm global → PATH → common install dirs, and reports versions and paths.
+- **One-click install / upgrade** — missing Node? The app downloads an official managed Node into `~/.dsh-app/node` (no admin). Missing dsh? It installs `@deepseek-ai/dsh` through npm automatically (mirror-aware in Chinese environments). Both App and dsh CLI can be checked and upgraded from the settings page.
+- **Automatic start/stop management** — on launch the App reuses a bridge-enabled `dsh web` at `127.0.0.1:3080`, or starts its own `dsh --profile dsh-app --port 0`; on quit it cleans up the whole process tree. Your manually started plain `dsh web` is left untouched, and launching the App does not block browser access.
+- **dsh CLI version management** — the status row and DSH App settings show the current dsh version/source/service URL; the latest version is checked against the npm registry, and you can update with one click or copy the command.
+- **Left-bottom connection status** — the sidebar footer status row shows a colored dot and connected/disconnected text, plus dsh CLI version and service URL on hover; click to copy connection info.
+- **Autostart** — optional autostart (`--hidden`) starts the App silently in the tray, ready to show the desktop shell on demand.
+
 ## Contents
 
-1. [Features](#features)
-2. [Screenshots](#screenshots)
-3. [How it connects](#how-it-connects)
-4. [Install](#install)
-5. [First run & troubleshooting](#first-run--troubleshooting)
-6. [Develop & build](#develop--build)
-7. [Testing failure scenarios](#testing-failure-scenarios)
-8. [Project structure](#project-structure)
-9. [Roadmap](#roadmap)
-10. [License](#license)
+1. [Why this is different from fork-based shells](#why-this-is-different-from-fork-based-shells)
+2. [Features](#features)
+3. [Screenshots](#screenshots)
+4. [How it connects](#how-it-connects)
+5. [Install](#install)
+6. [First run & troubleshooting](#first-run--troubleshooting)
+7. [Develop & build](#develop--build)
+8. [Testing failure scenarios](#testing-failure-scenarios)
+9. [Project structure](#project-structure)
+10. [Roadmap](#roadmap)
+11. [License](#license)
 
 ---
 
@@ -52,11 +74,13 @@ That is why **DeepSeek Harness App builds on the official web UI instead of rein
 
 | Area | What you get |
 |------|----------------|
-| **Smart connect** | Detects `dsh` CLI (DSH_BIN → npm global → PATH); reuses a running **bridge-enabled** instance on `127.0.0.1:3080`, otherwise starts its own `dsh --profile dsh-app --port 0` on a free random port (a plain `dsh web` you started manually is left alone) |
-| **dsh CLI detection** | Startup wizard when the CLI is missing — copy the install command, re-check with one click |
+| **Smart connect** | Detects `dsh` CLI (DSH_BIN → npm global → PATH → common install dirs); reuses a running **bridge-enabled** instance on `127.0.0.1:3080`, otherwise starts its own `dsh --profile dsh-app --port 0` on a free random port (a plain `dsh web` you started manually is left alone) |
+| **Node / CLI auto detection** | Startup wizard checks Node, npm, and dsh step by step, reports versions/paths, and warns when the managed Node is too old |
+| **dsh CLI detection** | Startup wizard when the CLI is missing — copy the install command, one-click install/upgrade, re-check with one click |
+| **One-click environment install** | Missing Node or dsh? Install them inside the app: official managed Node to `~/.dsh-app/node`, then `@deepseek-ai/dsh` via npm global (mirror-aware, no admin required) |
 | **Fused title bar** | A borderless window with a title bar fused into the system frame, per-platform window buttons: **macOS** uses the native title bar entirely (real system traffic lights, native rounded corners and shadow); **Windows** draws Win11-style square caption buttons at the top-right; **Linux** draws neutral circle buttons at the top-left. Windows 11 rounds the whole window automatically (undecorated + shadow). The strip is the drag region; double-click maximizes. Title bar colors follow the **in-app theme** (dark / light / system) on every platform |
-| **Sidebar status row** | A status capsule (**colored dot + 已连接 / 未连接**) with the app version right-aligned on the same row, at the very bottom of the sidebar **below the settings button** (registered through the official `sidebar.footer.action` slot; the settings row moves up one slot) |
-| **DSH App settings page** | A page registered into the official settings panel: app info (version, source-code link) + **update management against GitHub Releases**; dsh CLI info (version / source / service URL) + **CLI update management** (latest check against the npm registry, one-click update, copy update command) |
+| **Sidebar status row (bottom-left)** | A status capsule (**colored dot + 已连接 / 未连接**) at the very bottom-left of the sidebar **below the settings button**, app version on the right; hover shows dsh CLI version and service URL, click copies the connection info (registered through the official `sidebar.footer.action` slot; the settings row moves up one slot) |
+| **DSH App settings page** | A page registered into the official settings panel: app info (version, source-code link) + **update management against GitHub Releases**; dsh CLI info (version / source / service URL) + **CLI version management** (latest check against the npm registry, one-click update, copy update command) |
 | **Model Presets** | Fused into the **original model configuration**, no separate page: on the first boot the bridge server pre-writes mainstream channels (DeepSeek / OpenAI / Anthropic / Google Gemini / OpenRouter / xAI / Moonshot / MiniMax / Zhipu GLM / Mistral / Groq / Together) into the official `llm-pi-ai` namespace — they show up under Settings → Models as already-configured routes with their built-in model catalogs enabled; you only fill the API key there. Once any provider is configured the presets never run again, so removed channels never come back |
 | **System tray** | Close-to-tray; left-click shows the window; Quit cleans up the whole dsh process tree (no orphans) |
 | **Single instance** | A second launch focuses the existing window instead of spawning another server |
@@ -66,7 +90,7 @@ That is why **DeepSeek Harness App builds on the official web UI instead of rein
 
 **Desktop layer (P1):** desktop notifications · autostart (silent tray via `--hidden`) · global shortcut (default `CmdOrCtrl+Shift+Space`) · connect modes (smart / explicit remote, container or self-hosted web UI — http/https only, reachability-checked) — the switches live in the official Web UI's "Desktop" settings section (injected via the `settings.section` slot)
 
-The desktop pieces are injected through the official **DSH plugin mechanism** (`dsh-app-bridge`, the `oh-dsh` route): the app owns a dedicated `dsh-app` profile that loads the bridge bundle — your own `web` profile is never touched.
+All desktop pieces are injected through the official **DSH plugin mechanism** (`dsh-app-bridge`, the `oh-dsh` route): the app owns a dedicated `dsh-app` profile that loads the bridge bundle — your own `web` profile is never touched. The App is only a native shell: it does not fork or vendor the dsh core, does not bundle an Electron runtime, and does not replace the official web UI.
 
 ---
 
@@ -81,6 +105,10 @@ The desktop pieces are injected through the official **DSH plugin mechanism** (`
 | Home — official dsh web UI inside the shell |
 |:---:|
 | ![Home](assets/screenshots/home.png) |
+
+| DSH App settings page — app + dsh CLI update management | Sidebar bottom-left status row — connection status & info |
+|:---:|:---:|
+| ![DSH App settings](assets/screenshots/app-setting.png) | ![App status](assets/screenshots/app-status.png) |
 
 ---
 
@@ -103,7 +131,7 @@ App starts
   └─ Quit from the tray → taskkill the whole process tree
 ```
 
-The frontend drives the connection (instead of the Rust side auto-connecting), so the install wizard is never skipped by a fast race. Only bridge-enabled instances are reused — a plain `dsh web` you started for browser development is left untouched, and the app starts its own plugin-enabled instance.
+The frontend drives the connection (instead of the Rust side auto-connecting), so the install wizard is never skipped by a fast race. Only bridge-enabled instances are reused — a plain `dsh web` you started for browser development is left untouched, and the app starts its own plugin-enabled instance. Reusing `127.0.0.1:3080` means browser and desktop share the same dsh process; even when the app starts its own profile instance, the standard local dsh web remains the underlying server, so launching the App does not block or take over your browser access.
 
 ---
 
@@ -122,6 +150,8 @@ npm install -g @deepseek-ai/dsh
 ```
 
 Alternatively set `DSH_BIN` to point at a dsh executable (e.g. a local build's `lib/bin.js`).
+
+> If Node or `dsh` is missing, the app's setup wizard can install them for you: it downloads an official managed Node into `~/.dsh-app/node`, then installs/upgrades `@deepseek-ai/dsh` through npm automatically — no terminal required. The same one-click flow is available later from the settings page for upgrades.
 
 That's it — launch the app and it connects automatically.
 
