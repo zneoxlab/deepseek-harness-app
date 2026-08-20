@@ -60,13 +60,14 @@
 2. [功能特性](#功能特性)
 3. [截图](#截图)
 4. [连接原理](#连接原理)
-5. [安装](#安装)
-6. [首次运行与排障](#首次运行与排障)
-7. [开发与构建](#开发与构建)
-8. [测试失败场景](#测试失败场景)
-9. [项目结构](#项目结构)
-10. [路线图](#路线图)
-11. [许可](#许可)
+5. [与浏览器 dsh web 共享单引擎](#与浏览器-dsh-web-共享单引擎)
+6. [安装](#安装)
+7. [首次运行与排障](#首次运行与排障)
+8. [开发与构建](#开发与构建)
+9. [测试失败场景](#测试失败场景)
+10. [项目结构](#项目结构)
+11. [路线图](#路线图)
+12. [许可](#许可)
 
 ---
 
@@ -90,7 +91,7 @@
 
 **桌面增强（P1）：** 桌面通知 · 开机自启（`--hidden` 静默驻留托盘）· 全局快捷键（默认 `CmdOrCtrl+Shift+Space` 呼出/隐藏）· 连接模式（智能 / 显式连接远程、容器、自建实例，仅 http/https 且校验可达）—— 设置页位于官方 Web UI 的「桌面设置」（`settings.section` 槽注入）
 
-桌面增强全部通过官方 **DSH 插件机制**（`dsh-app-bridge`，oh-dsh 路线）注入：应用独占一个 `dsh-app` profile 加载桥插件 —— 你自己的 `web` profile 完全不被改动。App 只是原生外壳：不 fork 或内置 dsh 核心、不捆绑 Electron 运行时、不替换官方 Web UI。
+桌面增强全部通过官方 **DSH 插件机制**（`dsh-app-bridge`，oh-dsh 路线）注入：应用独占一个 `dsh-app` profile 加载桥插件 —— 默认不触碰你自己的 `web` profile。App 只是原生外壳：不 fork 或内置 dsh 核心、不捆绑 Electron 运行时、不替换官方 Web UI。
 
 ---
 
@@ -132,6 +133,51 @@
 ```
 
 连接由**前端检测结果驱动**（而非 Rust 启动时自动连接），所以安装向导永远不会被快速竞态跳过。只有**带桌面桥**的实例才会被复用 —— 你为浏览器开发手动起的普通 `dsh web` 会被忽略，应用另起自己的带插件实例。复用 `127.0.0.1:3080` 时，浏览器和桌面共享同一个 dsh 进程；即使应用自起独立 profile，底层仍是标准本地 dsh web，因此启动 App 不会占用、不会顶掉、也不影响浏览器里的网页访问。
+
+## 与浏览器 dsh web 共享单引擎
+
+如果你把 `dsh web`（3080、`web` profile）作为日常主力，可以让桌面壳**直接复用同一个实例**，而不是另起一个 `dsh-app` 引擎 —— 一个引擎，宠物/插件/会话全部一致，永不分叉。
+
+把桥插件装进你的 `web` profile（用 `link:` 依赖指向应用自带的 `dsh-app-bridge` 目录）：
+
+```bash
+dsh plugin --profile web add link:D:/path/to/DSH/dsh-app-bridge
+```
+
+> **注意：** 这是一次性手动安装 —— 与应用自有的 `dsh-app` profile（其 bridge 由 App 每次启动自动确保）不同，**App 永远不会碰你的 `web` profile**。在那里装/卸 bridge 始终由你用 `dsh plugin` 决定。
+
+重启 `dsh web` 后，桌面壳的智能连接会探测 3080 的 `GET /dsh-app/status`，命中 `{"ok":true,"plugin":"dsh-app-bridge"}` 后直接复用 —— App 退化为纯 WebView2 壳（无 `--profile dsh-app` 引擎进程）。
+
+注意：
+
+- **浏览器保持干净。** 桥插件客户端会检测 Tauri 壳（`__TAURI_INTERNALS__`），只在壳内注入桌面专属 UI（融合标题栏、侧边栏状态行、"DSH App" 设置页）；普通浏览器只拿到 `/dsh-app/status` 标记，无视觉与功能影响。
+- **首次模型预写是安全的。** 桥插件只在 `llm-pi-ai` 完全没有 `providers` 时预写主流模型渠道；已有配置的 `settings.yaml` 永远不会被改动。
+- **保持应用独占的 `dsh-app` profile 干净。** 改它的 `package.json` 请手动编辑 —— `dsh plugin` 命令可能把桥 bundle 挪到 `.ignored` 导致加载异常。
+- **回滚**：`dsh plugin --profile web remove dsh-app-bridge`，重启 `dsh web`；App 恢复自起 `dsh-app` 引擎的默认行为。
+
+### 共享 vs 独立 —— 如何选择
+
+桌面壳是共享浏览器 web 的引擎,还是自起独立引擎,**由唯一一个开关决定**:web profile 里是否安装了桥插件。
+
+| | 共享模式(web profile 装 bridge) | 独立模式(web profile 无 bridge) |
+|---|---|---|
+| 引擎实例 | 一个(复用 3080 web) | 可能两个(web + dsh-app 引擎) |
+| 宠物/插件/会话 | 各处完全一致 | web 与 App 之间可能分叉 |
+| App 内存占用 | 纯壳(仅 WebView2) | 壳 + 引擎 |
+| 浏览器共存 | 干净(桌面 UI 只在壳内注入) | 天然干净 |
+| 适合场景 | 浏览器 web 是日常主力 | 只用 App,从不打开浏览器 web |
+
+双向切换各一条命令:
+
+```bash
+# 切到共享模式
+dsh plugin --profile web add link:D:/path/to/DSH/dsh-app-bridge
+
+# 切到独立模式(上游默认)
+dsh plugin --profile web remove dsh-app-bridge
+```
+
+共享模式下浏览器保持干净(桌面专属 UI 只在 Tauri 壳内注入),**共享模式没有任何缺点**——只要你还用浏览器 web,它就是推荐默认。独立模式只在你从不打开浏览器 web、想省掉 3080 那个常驻引擎进程时才需要。
 
 ---
 

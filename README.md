@@ -60,13 +60,14 @@ Practical highlights:
 2. [Features](#features)
 3. [Screenshots](#screenshots)
 4. [How it connects](#how-it-connects)
-5. [Install](#install)
-6. [First run & troubleshooting](#first-run--troubleshooting)
-7. [Develop & build](#develop--build)
-8. [Testing failure scenarios](#testing-failure-scenarios)
-9. [Project structure](#project-structure)
-10. [Roadmap](#roadmap)
-11. [License](#license)
+5. [Sharing a single engine with your browser web](#sharing-a-single-engine-with-your-browser-web)
+6. [Install](#install)
+7. [First run & troubleshooting](#first-run--troubleshooting)
+8. [Develop & build](#develop--build)
+9. [Testing failure scenarios](#testing-failure-scenarios)
+10. [Project structure](#project-structure)
+11. [Roadmap](#roadmap)
+12. [License](#license)
 
 ---
 
@@ -90,7 +91,7 @@ Practical highlights:
 
 **Desktop layer (P1):** desktop notifications · autostart (silent tray via `--hidden`) · global shortcut (default `CmdOrCtrl+Shift+Space`) · connect modes (smart / explicit remote, container or self-hosted web UI — http/https only, reachability-checked) — the switches live in the official Web UI's "Desktop" settings section (injected via the `settings.section` slot)
 
-All desktop pieces are injected through the official **DSH plugin mechanism** (`dsh-app-bridge`, the `oh-dsh` route): the app owns a dedicated `dsh-app` profile that loads the bridge bundle — your own `web` profile is never touched. The App is only a native shell: it does not fork or vendor the dsh core, does not bundle an Electron runtime, and does not replace the official web UI.
+All desktop pieces are injected through the official **DSH plugin mechanism** (`dsh-app-bridge`, the `oh-dsh` route): the app owns a dedicated `dsh-app` profile that loads the bridge bundle — your own `web` profile is untouched by default. The App is only a native shell: it does not fork or vendor the dsh core, does not bundle an Electron runtime, and does not replace the official web UI.
 
 ---
 
@@ -132,6 +133,51 @@ App starts
 ```
 
 The frontend drives the connection (instead of the Rust side auto-connecting), so the install wizard is never skipped by a fast race. Only bridge-enabled instances are reused — a plain `dsh web` you started for browser development is left untouched, and the app starts its own plugin-enabled instance. Reusing `127.0.0.1:3080` means browser and desktop share the same dsh process; even when the app starts its own profile instance, the standard local dsh web remains the underlying server, so launching the App does not block or take over your browser access.
+
+## Sharing a single engine with your browser web
+
+If you run `dsh web` as your daily driver (port 3080, `web` profile), you can make the desktop shell **reuse that same instance** instead of spawning its own `dsh-app` engine — one engine, one set of pets/plugins/sessions, nothing forks.
+
+Install the bridge into your `web` profile (a `link:` dependency pointing at the app's own `dsh-app-bridge` folder):
+
+```bash
+dsh plugin --profile web add link:D:/path/to/DSH/dsh-app-bridge
+```
+
+> **Note:** this is a manual, one-time install — unlike the app-owned `dsh-app` profile (whose bridge the App ensures automatically at every launch), the App **never touches your `web` profile**. Installing/removing the bridge there is always your call via `dsh plugin`.
+
+After restarting `dsh web`, the desktop shell's smart connect probes `GET /dsh-app/status` on 3080, finds `{"ok":true,"plugin":"dsh-app-bridge"}`, and reuses the instance — the App becomes a pure WebView2 shell (no `--profile dsh-app` engine process).
+
+Notes:
+
+- **Browser stays clean.** The bridge client detects the Tauri shell (`__TAURI_INTERNALS__`) and only injects the desktop-only UI (fused title bar, sidebar status row, "DSH App" settings page) inside the shell; a plain browser gets the `/dsh-app/status` marker only, with no visual or functional impact.
+- **First-run model presets are safe.** The bridge pre-writes mainstream model channels into `llm-pi-ai` only when that namespace has no `providers` yet; an already-configured `settings.yaml` is never touched.
+- **Keep the app-owned `dsh-app` profile pristine.** Edit its `package.json` manually — `dsh plugin` commands may move the bridge bundle to `.ignored` and break loading.
+- To revert: `dsh plugin --profile web remove dsh-app-bridge`, then restart `dsh web`; the App falls back to its own `dsh-app` engine.
+
+### Shared vs. standalone — which to pick
+
+Whether the desktop shell shares your browser web's engine or runs its own is decided by a single switch: **whether the bridge is installed in your `web` profile**.
+
+| | Shared (bridge in `web` profile) | Standalone (no bridge in `web` profile) |
+|---|---|---|
+| Engine instances | One (the 3080 web, reused) | Two possible (web + `dsh-app` engine) |
+| Pets / plugins / sessions | Identical everywhere | Can fork between web and App |
+| App footprint | Pure shell (WebView2 only) | Shell + engine |
+| Browser coexistence | Clean (desktop UI only inside the shell) | Clean by default |
+| Best for | Browser web is your daily driver | You only use the App, no browser web |
+
+Switching is one command each way:
+
+```bash
+# Shared mode
+dsh plugin --profile web add link:D:/path/to/DSH/dsh-app-bridge
+
+# Standalone mode (upstream default)
+dsh plugin --profile web remove dsh-app-bridge
+```
+
+Since the browser stays clean in shared mode (desktop-only UI is injected only inside the Tauri shell), **shared mode has no downside** — it is the recommended default whenever you also use the browser web. Standalone mode only makes sense if you never open the browser web and want to avoid the extra 3080 engine process.
 
 ---
 
