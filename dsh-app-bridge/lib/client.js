@@ -1429,6 +1429,12 @@ function startNotificationBridge() {
   console.log("[dsh-app-bridge] notification bridge: listening on events.mux / events.host");
 }
 function apply(ctx) {
+  const inTauriShell = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  if (!inTauriShell) {
+    console.log("[dsh-app-bridge] browser environment detected - desktop-only UI skipped (server marker stays active)");
+    return;
+  }
+
   mountTitleBar();
   const store = createAppSettingsStore();
   let bound;
