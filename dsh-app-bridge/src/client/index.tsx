@@ -1723,6 +1723,18 @@ function startNotificationBridge(): void {
 // ---------------------------------------------------------------------------
 
 export function apply(ctx: ClientContext): void {
+  // 0) Environment guard: desktop-shell-only UI.
+  // The bridge can also be installed into a shared web profile so that the
+  // desktop shell reuses the running dsh web instance (single-engine mode).
+  // In a plain browser there is no Tauri shell: the server half must still
+  // answer GET /dsh-app/status, but the desktop-only UI (fused title bar,
+  // sidebar status row, "DSH App" settings page) must NOT be injected.
+  const inTauriShell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+  if (!inTauriShell) {
+    console.log('[dsh-app-bridge] browser environment detected - desktop-only UI skipped (server marker stays active)')
+    return
+  }
+
   // 1) Fused title bar.
   mountTitleBar()
 
